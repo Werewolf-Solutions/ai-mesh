@@ -72,6 +72,31 @@ Reading speed on a long prompt (≈ 370 tok/s) is a little lower than on a short
 
 Load time, RAM, speed and thinking checks for all 9 catalog models (4 threads, 8k context) are in [models.md](models.md#the-catalog). On this CPU, speed ranges from 176 tokens/s (SmolLM2 135M) to 6 tokens/s (Qwen3 8B).
 
+## Coding with Qwen3 8B (small benchmark)
+
+This is 6 everyday coding tasks, not a standard benchmark:
+- validate an IPv4 address
+- merge intervals
+- an LRU cache class
+- a CSV line parser with quoted fields
+- top-N word counts
+- fixing a buggy `median` function
+
+Each answer's code runs against hidden tests in a Docker container with no network (`scripts/code-eval.mjs`). The model is Qwen3 8B Q4_K_M, running natively with 8 threads on the Ryzen 7 3700X, at temperature 0.
+
+| Effort | Passed | Time per task | Tokens per task |
+|---|---|---|---|
+| Fast (no thinking) | 4 / 6 | 12–43 s (median ≈ 25 s) | 60–230 |
+| Balanced (thinking ≤ 512 tokens) | 4 / 6 | 109–129 s | ≈ 600–700 |
+
+- **Both modes failed the same two tasks:**
+  - the CSV parser, on an edge case (empty quoted fields)
+  - the median fix, which corrected the maths but still sorted the caller's list in place. The prompt did not forbid that; the hidden test checked for it.
+- **Found and fixed during this benchmark:**
+  - At first, when the thinking budget ran out, the model sometimes kept "thinking" inside its answer until the length limit, producing truncated code (3 of 6 answers).
+  - Nodes now start llama.cpp with a budget message ("Time is up: stop thinking now and write the final answer directly."). On the rerun, all answers finished normally, in about half the time.
+- **Take-away:** Qwen3 8B on a CPU writes correct small functions and classes most of the time, but misses edge cases and unstated requirements. Always run tests on its code. At about 6 tokens/s, a short answer takes about 30 s, and one with thinking about 2 minutes.
+
 ## Mesh
 
 | Metric | Value | How |

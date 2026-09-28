@@ -106,6 +106,8 @@ export class LlamaCppAdapter implements InferenceAdapter {
       '--port', String(port),
       '-c', String(this.opts.contextTokens * this.opts.parallel),
       '--reasoning-format', 'deepseek',
+      // When the mesh ends thinking early (budget reached), tell the model to switch to its answer.
+      '--reasoning-budget-message', ' Time is up: stop thinking now and write the final answer directly.',
       '-np', String(this.opts.parallel),
       '-t', String(this.opts.threads),
       '-tb', String(this.opts.batchThreads),
