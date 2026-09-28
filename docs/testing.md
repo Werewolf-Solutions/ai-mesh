@@ -49,6 +49,7 @@ It is never used by real deployments.
   - network dashboard with the peer ring and table
 
   Two UI bugs found this way were fixed: a crash on the first message, and a stuck "streaming" state.
+- **Tests page** (Chrome, real 3-node cluster): showing and hiding the text, choosing a node, a live timer, the result (1,408 tokens read by node1 in 3.81 s), run history, and the rendered `docs/benchmarks.md` view.
 
 ## Not validated (the environment could not provide it)
 

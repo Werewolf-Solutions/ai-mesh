@@ -28,6 +28,18 @@ Every number here was measured on the one development machine on 2026-09-28. Not
 
 The 2 vCPU / 2 GB sizing target holds comfortably for *this* model: one node plus its runtime used under 400 MB. A larger model would change this completely.
 
+## Reading a long text (UI: Tests → Reading speed test)
+
+The prompt is a 1,178-word text (about 1,400 tokens) plus an instruction to summarise it in one sentence. Each run adds a random tag so the prompt cache cannot be reused. The reading time is measured by the worker, from slot start to the first generated token.
+
+| Worker | Runs | Tokens read | Reading time | Reading speed |
+|---|---|---|---|---|
+| Local (the gateway itself) | 3 | 1,401–1,402 | 3.74–3.85 s | 365–374 tok/s |
+| Remote peer via the mesh | 3 | 1,401–1,404 | 3.79–3.84 s | 365–371 tok/s |
+| Remote peer, run from the browser UI | 1 | 1,408 | 3.81 s | 370 tok/s |
+
+Reading speed on a long prompt (≈ 370 tok/s) is a little lower than on a short one (≈ 400 tok/s): attention cost grows with context length. Routing to a peer adds no measurable reading time; the network cost appears only in the browser's "first word" time (a few ms on one host).
+
 ## Mesh
 
 | Metric | Value | How |

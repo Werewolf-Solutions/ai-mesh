@@ -235,7 +235,7 @@ export async function buildHttpServer(deps: HttpDeps): Promise<FastifyInstance> 
               model: deps.modelId,
               choices: [{ index: 0, message: { role: 'assistant', content: text }, finish_reason: ev.finishReason }],
               usage: { prompt_tokens: ev.usage.promptTokens, completion_tokens: ev.usage.completionTokens, total_tokens: ev.usage.promptTokens + ev.usage.completionTokens },
-              mesh: meshInfo(ev.workerPeerId, ev.route, ev.attempts),
+              mesh: { ...meshInfo(ev.workerPeerId, ev.route, ev.attempts), ...(ev.timings ? { timings: ev.timings } : {}) },
             });
           }
         }
@@ -300,7 +300,7 @@ export async function buildHttpServer(deps: HttpDeps): Promise<FastifyInstance> 
           await write(
             chunk({}, ev.finishReason, {
               usage: { prompt_tokens: ev.usage.promptTokens, completion_tokens: ev.usage.completionTokens, total_tokens: ev.usage.promptTokens + ev.usage.completionTokens },
-              mesh: meshInfo(ev.workerPeerId, ev.route, ev.attempts),
+              mesh: { ...meshInfo(ev.workerPeerId, ev.route, ev.attempts), ...(ev.timings ? { timings: ev.timings } : {}) },
             }),
           );
           await write('[DONE]');

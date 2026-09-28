@@ -28,6 +28,8 @@ export interface MeshMeta {
   route: 'local' | 'remote' | null;
   runtime: string | null;
   attempts: Array<{ workerPeerId: string; route: string; outcome: string }>;
+  /** Worker-measured timings from the final chunk (absent on interrupted streams). */
+  timings?: { queueMs: number; firstTokenMs: number; totalMs: number };
 }
 
 export interface GatewayAttempt {
@@ -197,6 +199,7 @@ export class MeshClient {
         return;
       }
       if (j.mesh?.attempts) meta.attempts = j.mesh.attempts;
+      if (j.mesh?.timings) meta.timings = j.mesh.timings;
       const c = j.choices?.[0];
       const t = c?.delta?.content;
       if (t) {

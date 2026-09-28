@@ -47,6 +47,14 @@ describe('4-node mesh (fake runtime)', () => {
     expect(last.mesh.workerPeerId).toBe(n1.peerId);
     expect(last.mesh.gatewayPeerId).toBe(n3.peerId);
     expect(last.usage.completion_tokens).toBe(5);
+    // worker-measured timings travel back through the gateway (used by the reading-speed test)
+    expect(last.mesh.timings.firstTokenMs).toBeGreaterThan(0);
+    expect(last.mesh.timings.totalMs).toBeGreaterThanOrEqual(last.mesh.timings.firstTokenMs);
+  });
+
+  it('local execution reports worker timings as well', async () => {
+    const r = await chat(n3, 'x [[fake:tokens=2]]', { target: 'local', stream: false });
+    expect(r.body.mesh.timings.firstTokenMs).toBeGreaterThan(0);
   });
 
   it('non-streaming responses carry attribution too', async () => {

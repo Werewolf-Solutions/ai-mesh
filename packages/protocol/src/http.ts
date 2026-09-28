@@ -66,6 +66,7 @@ export interface MeshAttribution {
   route: 'local' | 'remote' | null;
   attempts: Array<{ workerPeerId: string; route: 'local' | 'remote'; outcome: string }>;
   runtime: 'llama.cpp' | 'fake';
+  timings?: { queueMs: number; firstTokenMs: number; totalMs: number };
 }
 
 export interface ApiErrorBody {

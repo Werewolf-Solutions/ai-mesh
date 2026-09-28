@@ -50,8 +50,11 @@ Image or other non-text content parts, and any unknown field, get `400 bad_reque
 ```json
 "mesh": {"gatewayPeerId": "…", "workerPeerId": "…", "route": "local|remote",
          "attempts": [{"workerPeerId": "…", "route": "remote", "outcome": "connect_timeout"}, …],
-         "runtime": "llama.cpp"}
+         "runtime": "llama.cpp",
+         "timings": {"queueMs": 0, "firstTokenMs": 3810, "totalMs": 4480}}
 ```
+
+`timings` is measured by the worker that produced the answer. `queueMs` is time waiting for a slot; `firstTokenMs` runs from slot start to the first generated token, which is how long the node spent reading the prompt; `totalMs` is the whole job. In streams, `timings` is on the final chunk only.
 
 and the headers `X-Mesh-Worker`, `X-Mesh-Gateway`, `X-Mesh-Route` and `X-Mesh-Runtime`. `X-Mesh-Runtime: fake` appears only on test nodes.
 

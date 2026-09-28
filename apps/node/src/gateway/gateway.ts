@@ -40,7 +40,16 @@ export interface AttemptRecord {
 export type GatewayEvent =
   | { type: 'first_token'; workerPeerId: string; route: 'local' | 'remote'; attempts: AttemptRecord[]; text: string }
   | { type: 'token'; text: string }
-  | { type: 'done'; finishReason: FinishReason; usage: Usage; workerPeerId: string; route: 'local' | 'remote'; attempts: AttemptRecord[] };
+  | {
+      type: 'done';
+      finishReason: FinishReason;
+      usage: Usage;
+      workerPeerId: string;
+      route: 'local' | 'remote';
+      attempts: AttemptRecord[];
+      /** Measured by the worker: queue wait, slot start to first token (prompt reading), total. */
+      timings?: { queueMs: number; firstTokenMs: number; totalMs: number };
+    };
 
 export class GatewayError extends MeshError {
   constructor(
@@ -172,7 +181,7 @@ export class Gateway {
               const genMs = Date.now() - started;
               if (ev.usage.completionTokens > 0 && genMs > 0) metrics.sample('tokens_per_s', (ev.usage.completionTokens * 1000) / genMs);
               metrics.inc(cand.route === 'local' ? 'gateway_completed_local' : 'gateway_completed_remote');
-              yield { type: 'done', finishReason: ev.finishReason, usage: ev.usage, workerPeerId: cand.peerId, route: cand.route, attempts };
+              yield { type: 'done', finishReason: ev.finishReason, usage: ev.usage, workerPeerId: cand.peerId, route: cand.route, attempts, ...('timings' in ev && ev.timings ? { timings: ev.timings } : {}) };
               return;
             }
           }
@@ -230,7 +239,10 @@ export class Gateway {
     );
     try {
       yield { type: 'accepted' as const, queuePosition: job.queuePosition, promptTokens: job.promptTokens };
-      yield* job.run(signal);
+      for await (const ev of job.run(signal)) {
+        // job.timings is complete by the time the done event is produced
+        yield ev.type === 'done' ? { ...ev, timings: { ...job.timings } } : ev;
+      }
     } finally {
       job.abandon(); // idempotent; guarantees the slot is freed even if the consumer stopped early
     }

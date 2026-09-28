@@ -35,7 +35,7 @@ import { FrameStream, ProtocolError } from './framing.js';
 export type AttemptEvent =
   | { type: 'accepted'; queuePosition: number; promptTokens: number }
   | { type: 'token'; text: string }
-  | { type: 'done'; finishReason: FinishReason; usage: Usage };
+  | { type: 'done'; finishReason: FinishReason; usage: Usage; timings?: { queueMs: number; firstTokenMs: number; totalMs: number } };
 
 // -------------------------------------------------------------------- worker side
 
@@ -218,7 +218,7 @@ export class InferClient {
           yield { type: 'token', text: f.text };
         } else if (f.type === 'completed') {
           terminal = true;
-          yield { type: 'done', finishReason: f.finishReason, usage: f.usage };
+          yield { type: 'done', finishReason: f.finishReason, usage: f.usage, ...(f.timings ? { timings: f.timings } : {}) };
           return;
         } else if (f.type === 'failed') {
           terminal = true;

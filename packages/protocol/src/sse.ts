@@ -85,5 +85,7 @@ export interface ChatCompletionChunk {
     route: 'local' | 'remote' | null;
     attempts?: Array<{ workerPeerId: string; route: 'local' | 'remote'; outcome: string }>;
     runtime?: 'llama.cpp' | 'fake';
+    /** Worker-measured; present on the final chunk. firstTokenMs ≈ time spent reading the prompt. */
+    timings?: { queueMs: number; firstTokenMs: number; totalMs: number };
   };
 }
