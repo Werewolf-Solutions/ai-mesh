@@ -112,6 +112,9 @@ export interface PeerView {
   rttMs: number | null;
   lastStatusAgeMs: number | null;
   consecutiveFailures: number;
+  /** The peer's hardware hint (cpu/cuda/vulkan) and the best decode speed THIS node has measured from its answers. */
+  accel: string | null;
+  measuredTokPerS: number | null;
   /** Catalog IDs (or fingerprints) of the models this peer says it is serving. */
   models: string[];
   lastError: string | null;
@@ -165,6 +168,8 @@ export interface CatalogModelView {
   maxOutputTokens: number;
   downloadBytes: number;
   ramMB: number;
+  /** Approximate GPU memory when the whole model runs on a GPU. */
+  vramMB: number;
   tested: boolean;
   fingerprint: string;
   /** Observed locally: how many reachable nodes (incl. this one) are serving it now. */

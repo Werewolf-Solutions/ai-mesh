@@ -37,6 +37,8 @@ export interface LlamaCppOptions {
   contextTokens: number;
   parallel: number;
   maxOutputTokens: number;
+  /** Layers to offload to the GPU (0 = CPU only). */
+  gpuLayers: number;
   mlock: boolean;
   mmap: boolean;
   startupTimeoutMs: number;
@@ -117,6 +119,7 @@ export class LlamaCppAdapter implements InferenceAdapter {
       '--offline',
       '--no-slots',
     ];
+    if (this.opts.gpuLayers > 0) args.push('-ngl', String(this.opts.gpuLayers));
     if (this.opts.mlock) args.push('--mlock');
     if (!this.opts.mmap) args.push('--no-mmap');
     this.baseUrl = `http://127.0.0.1:${port}`;
@@ -129,7 +132,12 @@ export class LlamaCppAdapter implements InferenceAdapter {
       : [this.opts.binary, args];
     const child = spawn(cmd, cmdArgs, {
       stdio: ['ignore', 'ignore', 'pipe'],
-      env: { PATH: process.env.PATH ?? '/usr/bin:/bin', LD_LIBRARY_PATH: join(this.opts.binary, '..') },
+      env: {
+        PATH: process.env.PATH ?? '/usr/bin:/bin',
+        LD_LIBRARY_PATH: join(this.opts.binary, '..'),
+        // GPU drivers (Vulkan loader, CUDA) may need these; nothing else from the node's environment is passed on.
+        ...Object.fromEntries(['HOME', 'XDG_RUNTIME_DIR', 'VK_ICD_FILENAMES', 'VK_DRIVER_FILES', 'CUDA_VISIBLE_DEVICES', 'GGML_VK_VISIBLE_DEVICES'].flatMap((k) => (process.env[k] ? [[k, process.env[k]!]] : []))),
+      },
     });
     this.child = child;
     if (child.pid) await atomicWriteFile(this.pidFile(), String(child.pid), 0o600).catch(() => undefined);

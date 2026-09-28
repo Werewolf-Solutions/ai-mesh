@@ -138,19 +138,24 @@ describe('DedupCache', () => {
 
 describe('router', () => {
   const st = (active: number, queued: number) => ({ model: 'm', ready: true, active, queued, maxConcurrency: 1, maxQueue: 8 });
-  it('prefers idle local, spills to the least-loaded remote, and honours exclusions', () => {
+  const r = (local: any, remotes: any[], exclude = new Set<string>(), outstanding = new Map<string, number>()) =>
+    rankCandidates({ selfPeerId: 'A', local, remotes, outstanding, exclude, remotePenalty: 0.5 }).map((c) => c.peerId);
+  const idle = { ready: true, active: 0, queued: 0, maxConcurrency: 1, maxQueue: 8, speed: 8 };
+  it('same speed: idle local wins; busy local spills to the least-loaded remote; exclusions honoured', () => {
     const remotes = [
-      { peerId: 'B', load: st(0, 0), rttMs: 5 },
-      { peerId: 'C', load: st(1, 3), rttMs: 1 },
+      { peerId: 'B', load: st(0, 0), rttMs: 5, speed: 8 },
+      { peerId: 'C', load: st(1, 3), rttMs: 1, speed: 8 },
     ];
-    const local = { ready: true, active: 0, queued: 0, maxConcurrency: 1, maxQueue: 8 };
-    const r = (l = local, exclude = new Set<string>(), outstanding = new Map<string, number>()) =>
-      rankCandidates({ selfPeerId: 'A', local: l, remotes, outstanding, exclude, remotePenalty: 0.5 }).map((c) => c.peerId);
-    expect(r()).toEqual(['A', 'B', 'C']);
-    expect(r({ ...local, active: 1 })).toEqual(['B', 'A', 'C']);
-    expect(r(local, new Set(['A']))).toEqual(['B', 'C']);
-    expect(r({ ...local, active: 1 }, new Set(), new Map([['B', 2]]))).toEqual(['A', 'B', 'C']);
-    expect(r({ ...local, ready: false })).toEqual(['B', 'C']);
+    expect(r(idle, remotes)).toEqual(['A', 'B', 'C']);
+    expect(r({ ...idle, active: 1 }, remotes)).toEqual(['B', 'A', 'C']);
+    expect(r(idle, remotes, new Set(['A']))).toEqual(['B', 'C']);
+    expect(r({ ...idle, ready: false }, remotes)).toEqual(['B', 'C']);
+  });
+  it('a measured-faster (GPU) node wins even over an idle local CPU, until its queue makes it slower', () => {
+    const gpu = (queued: number) => [{ peerId: 'G', load: st(queued ? 1 : 0, Math.max(0, queued - 1)), rttMs: 5, speed: 58 }];
+    expect(r(idle, gpu(0))[0]).toBe('G');
+    expect(r(idle, gpu(4))[0]).toBe('G'); // 5 jobs × 256/58 ≈ 22 s < 32 s on the local CPU
+    expect(r(idle, gpu(8))[0]).toBe('A'); // 9 jobs × 4.4 s ≈ 40 s > 32 s
   });
 });
 

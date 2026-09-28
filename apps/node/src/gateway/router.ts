@@ -1,13 +1,15 @@
 /**
- * Routing strategy (deliberately simple, documented in docs/architecture.md):
+ * Routing strategy (documented in docs/architecture.md):
  *
- *   score = (activeJobs + queueLength + outstanding_from_this_gateway) / maxConcurrency
- *         + (remote ? remotePenalty + rttMs / 1000 : 0)
+ *   expected seconds = (jobs ahead + 1) × TYPICAL_JOB_TOKENS / speed
+ *                      + (remote ? remotePenalty + rttMs/1000 : 0)
  *
- * Lowest score wins; ties break on peer ID for determinism. Local values are
- * exact; remote values come from the peer's last authenticated status record
- * (a hint, possibly up to one probe interval stale) plus what this gateway has
- * itself sent there. Workers enforce their own limits regardless.
+ * `jobs ahead` = that model's active + queued (+ what this gateway already has
+ * outstanding there) divided by its concurrency. `speed` is the decode speed
+ * THIS gateway measured from that node's previous answers for that model; until
+ * there is a measurement, a prior from the node's hardware hint is used
+ * (CPU ≈ 8 tok/s, GPU ≈ 40 tok/s). A node cannot make itself look faster than
+ * it really answers. Lowest expected time wins; ties break on peer ID.
  */
 import type { ModelLoad } from '../p2p/peers.js';
 
@@ -18,7 +20,12 @@ export interface Candidate {
   rttMs: number;
 }
 
+export const TYPICAL_JOB_TOKENS = 256;
+export const PRIOR_TOK_PER_S: Record<string, number> = { cpu: 8, cuda: 40, vulkan: 30, metal: 30 };
+
 export interface LocalLoad {
+  /** Decode speed measured (or prior) for this model on this node. */
+  speed: number;
   ready: boolean;
   active: number;
   queued: number;
@@ -29,7 +36,7 @@ export interface LocalLoad {
 export function rankCandidates(opts: {
   selfPeerId: string;
   local: LocalLoad;
-  remotes: Array<{ peerId: string; load: ModelLoad; rttMs: number }>;
+  remotes: Array<{ peerId: string; load: ModelLoad; rttMs: number; speed: number }>;
   outstanding: Map<string, number>;
   exclude: Set<string>;
   remotePenalty: number;
@@ -41,7 +48,7 @@ export function rankCandidates(opts: {
     out.push({
       peerId: opts.selfPeerId,
       route: 'local',
-      score: (local.active + local.queued) / Math.max(1, local.maxConcurrency) + (full ? 1000 : 0),
+      score: ((local.active + local.queued) / Math.max(1, local.maxConcurrency) + 1) * (TYPICAL_JOB_TOKENS / Math.max(0.1, local.speed)) + (full ? 1e6 : 0),
       rttMs: 0,
     });
   }
@@ -53,7 +60,7 @@ export function rankCandidates(opts: {
     out.push({
       peerId: r.peerId,
       route: 'remote',
-      score: pending / Math.max(1, s.maxConcurrency) + opts.remotePenalty + r.rttMs / 1000 + (full ? 1000 : 0),
+      score: (pending / Math.max(1, s.maxConcurrency) + 1) * (TYPICAL_JOB_TOKENS / Math.max(0.1, r.speed)) + opts.remotePenalty + r.rttMs / 1000 + (full ? 1e6 : 0),
       rttMs: r.rttMs,
     });
   }

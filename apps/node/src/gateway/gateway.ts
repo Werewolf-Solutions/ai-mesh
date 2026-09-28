@@ -19,7 +19,7 @@ import type { PeerManager } from '../p2p/peers.js';
 import { abortReason, deadlineTimer, linkedController } from '../util/abort.js';
 import type { Logger } from '../util/log.js';
 import type { ModelManager } from '../models/manager.js';
-import { rankCandidates, type Candidate } from './router.js';
+import { PRIOR_TOK_PER_S, rankCandidates, type Candidate } from './router.js';
 
 export interface GatewayRequest {
   /** Fingerprint of the model to run. */
@@ -70,6 +70,28 @@ export class Gateway {
   inFlight = 0;
   private readonly outstanding = new Map<string, number>();
   private readonly active = new Set<AbortController>();
+  /** Decode speed this gateway measured, per `${peerId}|${model}` (EWMA, tokens/s). */
+  private readonly speeds = new Map<string, number>();
+
+  speedOf(peerId: string, model: string, accelHint: string | undefined): number {
+    return this.speeds.get(`${peerId}|${model}`) ?? PRIOR_TOK_PER_S[accelHint ?? 'cpu'] ?? 8;
+  }
+
+  /** Best measured speed for a peer across models (display only). */
+  bestSpeed(peerId: string): number | null {
+    let best: number | null = null;
+    for (const [k, v] of this.speeds) if (k.startsWith(`${peerId}|`)) best = Math.max(best ?? 0, v);
+    return best === null ? null : Math.round(best * 10) / 10;
+  }
+
+  private recordSpeed(peerId: string, model: string, tokens: number, ms: number): void {
+    if (tokens < 8 || ms <= 0) return;
+    const s = tokens / (ms / 1000);
+    const k = `${peerId}|${model}`;
+    const prev = this.speeds.get(k);
+    this.speeds.set(k, prev === undefined ? s : prev * 0.6 + s * 0.4);
+    if (this.speeds.size > 4096) this.speeds.delete(this.speeds.keys().next().value!);
+  }
 
   /** Cancel every in-flight request (used at the end of the shutdown grace period). */
   abortAll(reason: MeshError): void {
@@ -105,9 +127,9 @@ export class Gateway {
     return rankCandidates({
       selfPeerId: this.deps.selfPeerId,
       local: h
-        ? { ready: true, active: h.pool.activeCount, queued: h.pool.queuedCount, maxConcurrency: h.pool.maxConcurrency, maxQueue: h.pool.maxQueue }
-        : { ready: false, active: 0, queued: 0, maxConcurrency: 1, maxQueue: 0 },
-      remotes: this.deps.peers.candidatesFor(model),
+        ? { ready: true, active: h.pool.activeCount, queued: h.pool.queuedCount, maxConcurrency: h.pool.maxConcurrency, maxQueue: h.pool.maxQueue, speed: this.speedOf(this.deps.selfPeerId, model, this.deps.models.accel) }
+        : { ready: false, active: 0, queued: 0, maxConcurrency: 1, maxQueue: 0, speed: 1 },
+      remotes: this.deps.peers.candidatesFor(model).map((r) => ({ ...r, speed: this.speedOf(r.peerId, model, r.accel) })),
       outstanding: this.outstanding,
       exclude,
       remotePenalty: this.deps.remotePenalty,
@@ -160,6 +182,7 @@ export class Gateway {
         attempts.push(rec);
         if (attempts.length > 1) metrics.inc('gateway_retries');
         let outputStarted = false;
+        let firstTokenAt = 0;
         if (cand.route === 'remote') this.outstanding.set(cand.peerId, (this.outstanding.get(cand.peerId) ?? 0) + 1);
         try {
           const remaining = req.deadlineMs - (Date.now() - started);
@@ -172,6 +195,7 @@ export class Gateway {
             if (ev.type === 'token') {
               if (!outputStarted) {
                 outputStarted = true;
+                firstTokenAt = Date.now();
                 const ttft = Date.now() - started;
                 metrics.sample('ttft_ms', ttft);
                 if (firstFailureAt !== null) metrics.sample('failover_ms', Date.now() - firstFailureAt);
@@ -181,6 +205,7 @@ export class Gateway {
               }
             } else {
               rec.outcome = 'completed';
+              this.recordSpeed(cand.peerId, req.model, ev.usage.completionTokens, Date.now() - firstTokenAt);
               const genMs = Date.now() - started;
               if (ev.usage.completionTokens > 0 && genMs > 0) metrics.sample('tokens_per_s', (ev.usage.completionTokens * 1000) / genMs);
               metrics.inc(cand.route === 'local' ? 'gateway_completed_local' : 'gateway_completed_remote');

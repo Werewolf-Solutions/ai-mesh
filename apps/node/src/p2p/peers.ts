@@ -67,6 +67,8 @@ export interface PeerManagerDeps {
   cfg: NodeConfig;
   selfPeerId: string;
   selfStatus: () => StatusRecord;
+  /** Best decode speed the gateway has measured for a peer (any model), for display. */
+  measuredSpeed?: (peerId: string) => number | null;
   /** Map a model fingerprint to a catalog ID for display (null if unknown here). */
   modelName: (fingerprint: string) => string | null;
   dataDir: string;
@@ -223,12 +225,12 @@ export class PeerManager {
   }
 
   /** Available peers serving `fingerprint`, with that model's load. Used by the router. */
-  candidatesFor(fingerprint: string): Array<{ peerId: string; load: ModelLoad; rttMs: number }> {
-    const out: Array<{ peerId: string; load: ModelLoad; rttMs: number }> = [];
+  candidatesFor(fingerprint: string): Array<{ peerId: string; load: ModelLoad; rttMs: number; accel?: string }> {
+    const out: Array<{ peerId: string; load: ModelLoad; rttMs: number; accel?: string }> = [];
     for (const e of this.peers.values()) {
       if (!this.isAvailable(e.peerId)) continue;
       const load = e.status!.modelLoad.find((m) => m.model === fingerprint && m.ready);
-      if (load) out.push({ peerId: e.peerId, load, rttMs: e.rttMs ?? 50 });
+      if (load) out.push({ peerId: e.peerId, load, rttMs: e.rttMs ?? 50, ...(e.status!.accel ? { accel: e.status!.accel } : {}) });
     }
     return out;
   }
@@ -284,6 +286,8 @@ export class PeerManager {
         inferenceReady: e.status?.inferenceReady ?? false,
         modelCompatible: e.status ? e.status.models.some((m) => this.deps.modelName(m) !== null) : false,
         models: (e.status?.models ?? []).map((m) => this.deps.modelName(m) ?? m),
+        accel: e.status?.accel ?? null,
+        measuredTokPerS: this.deps.measuredSpeed?.(e.peerId) ?? null,
         activeJobs: e.status?.activeJobs ?? null,
         queueLength: e.status?.queueLength ?? null,
         rttMs: e.rttMs === null ? null : Math.round(e.rttMs * 10) / 10,

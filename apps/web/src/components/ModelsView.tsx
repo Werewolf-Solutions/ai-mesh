@@ -1,5 +1,5 @@
 import type { CatalogModelView } from '@werewolf-mesh/protocol';
-import { useState } from 'react';
+import { useCallback, useEffect, useState } from 'react';
 import { gb, ramGb, useCatalog } from '../models';
 import type { Gateway } from '../store';
 
@@ -35,6 +35,7 @@ export function ModelsView({ gateways }: { gateways: Gateway[] }) {
           The models the Werewolf mesh can run. Each is openly licensed, pinned to an exact file checked by SHA-256, and tested on the mesh's llama.cpp build. When
           your computer runs a model, anyone in the pack can use it through their own node, and your node can use models other computers run.
         </p>
+        {cat.isOperator && <GpuCard gateway={gateways[0]} onChanged={() => void cat.refresh()} />}
         {!cat.isOperator && cat.models && (
           <p className="mt-3 rounded-lg border border-rule bg-sheet px-4 py-3 text-sm text-slate">
             You are viewing another operator's gateway, so you can see what the pack runs but not add models here. To run a model on your own computer, open your own
@@ -64,7 +65,9 @@ export function ModelsView({ gateways }: { gateways: Gateway[] }) {
                 </div>
                 <div>
                   <dt className="text-slate">Memory</dt>
-                  <dd>~{ramGb(m.ramMB)}</dd>
+                  <dd>
+                    ~{ramGb(m.ramMB)} <span className="text-slate">· GPU ~{ramGb(m.vramMB)}</span>
+                  </dd>
                 </div>
                 <div>
                   <dt className="text-slate">Context</dt>
@@ -152,5 +155,91 @@ function LocalControls({
       {!l.fit.ok && l.state !== 'serving' && <p className="mt-2 text-sm text-blood">Can't run here: {l.fit.reasons.join('; ')}.</p>}
       {l.error && <p className="mt-2 text-sm text-blood">{l.error}</p>}
     </div>
+  );
+}
+
+interface RuntimeView {
+  accel: 'cpu' | 'cuda' | 'vulkan';
+  gpus: Array<{ vendor: string; name: string; vramMB: number | null; freeMB: number | null; backends: Array<'cuda' | 'vulkan'> }>;
+  builds: Array<{ backend: 'cuda' | 'vulkan'; installed: boolean; pinned: boolean; usable: boolean; requires: string | null }>;
+  job: { backend: string; phase: 'downloading' | 'restarting'; done: number; total: number; error?: string } | null;
+}
+
+/** "This computer's GPU": the operator's switch for sharing a GPU with the pack. */
+function GpuCard({ gateway, onChanged }: { gateway: Gateway | undefined; onChanged: () => void }) {
+  const [rt, setRt] = useState<RuntimeView | null>(null);
+  const [err, setErr] = useState<string | null>(null);
+  const headers = useCallback((): Record<string, string> => {
+    const t = gateway?.adminToken || gateway?.token;
+    return t ? { authorization: `Bearer ${t}` } : {};
+  }, [gateway]);
+  const load = useCallback(async () => {
+    if (!gateway) return;
+    const r = await fetch(`${gateway.url.replace(/\/$/, '')}/admin/runtime`, { headers: headers() }).catch(() => null);
+    if (r?.ok) setRt((await r.json()) as RuntimeView);
+  }, [gateway, headers]);
+  useEffect(() => {
+    void load();
+    const t = setInterval(() => void load(), 2000);
+    return () => clearInterval(t);
+  }, [load]);
+  const set = async (accel: 'cpu' | 'cuda' | 'vulkan') => {
+    setErr(null);
+    const r = await fetch(`${gateway!.url.replace(/\/$/, '')}/admin/runtime`, { method: 'POST', headers: { ...headers(), 'content-type': 'application/json' }, body: JSON.stringify({ accel }) });
+    if (!r.ok) setErr(((await r.json().catch(() => null)) as { error?: { message?: string } } | null)?.error?.message ?? `HTTP ${r.status}`);
+    await load();
+    onChanged();
+  };
+  if (!rt) return null;
+  const gpu = rt.gpus[0];
+  const onGpu = rt.accel !== 'cpu';
+  const best = gpu?.backends.includes('cuda') ? 'cuda' : gpu?.backends[0];
+  const build = rt.builds.find((b) => b.backend === best);
+  return (
+    <section className="mt-6 rounded-xl border border-moon/60 bg-sheet p-4" aria-labelledby="gpu-title">
+      <h2 id="gpu-title" className="font-display text-xl">
+        This computer's GPU
+      </h2>
+      {!gpu ? (
+        <p className="mt-1 text-slate">No GPU found. Models run on the CPU. (NVIDIA cards need their driver; AMD and Intel need a Vulkan driver.)</p>
+      ) : (
+        <>
+          <p className="mt-1">
+            {gpu.name}
+            {gpu.vramMB ? ` · ${(gpu.vramMB / 1024).toFixed(0)} GB` : ''}
+            {gpu.freeMB !== null ? <span className="text-slate"> · {(gpu.freeMB / 1024).toFixed(1)} GB free</span> : null}
+          </p>
+          <p className="mt-1 text-sm text-slate">
+            {onGpu
+              ? `Your models run on the GPU (${rt.accel}). Nodes in the pack measure how fast your answers are and send you more work when you are faster than their own computer.`
+              : 'Your models run on the CPU. Running them on the GPU makes answers several times faster (Qwen3 8B: about 6 → 58 tokens per second on an RTX 3060), and the pack will prefer your node for the models you run.'}
+          </p>
+          {rt.job && !rt.job.error && (
+            <p className="num mt-2 text-sm">
+              {rt.job.phase === 'downloading' ? `Downloading the GPU build of llama.cpp: ${(rt.job.done / 2 ** 20).toFixed(0)} MB (verified before use)` : 'Restarting your models…'}
+            </p>
+          )}
+          {rt.job?.error && <p className="mt-2 text-sm text-blood">{rt.job.error}</p>}
+          <div className="mt-3 flex flex-wrap gap-2 text-sm">
+            {!onGpu && best && (
+              <button type="button" disabled={!!rt.job && !rt.job.error} onClick={() => void set(best)} className="rounded-md bg-ink px-3 py-1.5 font-medium text-paper disabled:opacity-40">
+                {build?.installed ? 'Use the GPU' : `Use the GPU (downloads the ${best.toUpperCase()} build first)`}
+              </button>
+            )}
+            {onGpu && (
+              <button type="button" disabled={!!rt.job && !rt.job.error} onClick={() => void set('cpu')} className="rounded-md border border-rule px-3 py-1.5 disabled:opacity-40">
+                Go back to the CPU
+              </button>
+            )}
+            {!onGpu && gpu.backends.length > 1 && (
+              <button type="button" disabled={!!rt.job && !rt.job.error} onClick={() => void set('vulkan')} className="rounded-md px-3 py-1.5 text-slate underline disabled:opacity-40">
+                Use Vulkan instead
+              </button>
+            )}
+          </div>
+          {err && <p className="mt-2 text-sm text-blood">{err}</p>}
+        </>
+      )}
+    </section>
   );
 }

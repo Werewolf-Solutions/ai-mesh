@@ -93,6 +93,7 @@ export class MeshNode {
       selfPeerId: this.identity.peerId,
       selfStatus: () => this.statusRecord(),
       modelName: (fp) => this.models.resolve(fp)?.id ?? null,
+      measuredSpeed: (id) => this.gateway?.bestSpeed(id) ?? null,
       dataDir: this.dataDir,
       log: this.log.child({ component: 'peers' }),
       metrics: this.metrics,
@@ -237,6 +238,7 @@ export class MeshNode {
       queueLength: t.queued,
       maxConcurrency: t.maxConcurrency,
       maxQueue: t.maxQueue,
+      accel: this.models.accel,
       addrs: this.libp2p
         .getMultiaddrs()
         .map((m) => m.toString())

@@ -35,6 +35,7 @@ Setup
   models install ID [--data DIR]        Download (verified) and host a catalog model on this node
   models unhost ID [--data DIR]         Stop serving a model on this node (keeps the file)
   models remove ID                      Delete a model file that is not being served
+  gpu [status|on [cuda|vulkan]|off]     Run this node's models on its GPU (shares it with the pack) or on the CPU
   model download|import|verify --scorer Same, for the optional embedding model that scores summaries in the UI
 
 Node
@@ -340,6 +341,58 @@ async function modelsCmd(a: Args): Promise<void> {
   fail('usage: ./mesh models [list|install|unhost|remove]');
 }
 
+async function gpuCmd(a: Args): Promise<void> {
+  const sub = a._[1] ?? 'status';
+  const dd = dataDir(a);
+  if (!(await exists(join(dd, FILES.config)))) fail(`no node at ${dd}`);
+  let live: any = null;
+  try {
+    live = await adminFetch(a, '/admin/runtime');
+  } catch {
+    /* node not running */
+  }
+  if (sub === 'status') {
+    const { detectGpus } = await import('./models/gpu.js');
+    const gpus = live?.gpus ?? (await detectGpus());
+    out(gpus.length ? gpus.map((g: any) => `GPU: ${g.name}${g.vramMB ? ` (${(g.vramMB / 1024).toFixed(0)} GB)` : ''}; works with ${g.backends.join(', ')}`).join('\n') : 'No GPU found (NVIDIA needs its driver; AMD/Intel need a Vulkan driver).');
+    if (live) out(`This node runs its models on: ${live.accel === 'cpu' ? 'the CPU' : `the GPU (${live.accel})`}`);
+    else out('Node not running.');
+    return;
+  }
+  const target = sub === 'off' ? 'cpu' : sub === 'on' ? (a._[2] ?? 'cuda') : fail('usage: ./mesh gpu [status|on [cuda|vulkan]|off]');
+  if (!live) {
+    // Not running: install the build now if needed and remember the choice.
+    const { installGpuBuild, gpuBuildInstalled } = await import('./models/gpu.js');
+    const pin = await runtimePin();
+    if (target !== 'cpu' && !gpuBuildInstalled(pin, target as 'cuda' | 'vulkan')) {
+      out(`downloading the pinned ${target} build of llama.cpp (verified by SHA-256)…`);
+      await installGpuBuild(pin, target as 'cuda' | 'vulkan', progress);
+      out('');
+    }
+    const statePath = join(dd, 'models-state.json');
+    const st = ((await readJsonIfExists(statePath)) as { hosted?: string[] } | undefined) ?? {};
+    const hosted = st.hosted ?? (await loadConfig(dd).catch(() => null))?.model.host ?? [DEFAULT_MODEL_ID];
+    await atomicWriteFile(statePath, JSON.stringify({ version: 1, hosted, accel: target }, null, 2) + '\n');
+    out(`The node will run its models on ${target === 'cpu' ? 'the CPU' : `the GPU (${target})`} when it starts.`);
+    return;
+  }
+  const e = await endpoint(a);
+  const r = await fetch(e.url + '/admin/runtime', { method: 'POST', headers: { authorization: `Bearer ${e.admin}`, 'content-type': 'application/json' }, body: JSON.stringify({ accel: target }) });
+  if (!r.ok) fail(((await r.json()) as any).error?.message ?? `HTTP ${r.status}`);
+  out(`switching to ${target}…`);
+  while (true) {
+    await new Promise((res) => setTimeout(res, 1000));
+    const v: any = await adminFetch(a, '/admin/runtime');
+    if (v.job?.error) fail(v.job.error);
+    if (v.job) process.stdout.write(v.job.phase === 'downloading' ? `\r  downloading ${(v.job.done / 2 ** 20).toFixed(0)} MiB   ` : '\r  restarting models on the new backend…   ');
+    const st: any = await adminFetch(a, '/admin/status');
+    if (!v.job && v.accel === target && st.models.every((m: any) => m.state === 'serving' || m.state === 'failed')) {
+      out(`\nModels now run on ${target === 'cpu' ? 'the CPU' : `the GPU (${target})`}: ${st.models.map((m: any) => `${m.id} ${m.state}`).join(', ')}`);
+      return;
+    }
+  }
+}
+
 async function adminFetch(a: Args, path: string, method = 'GET'): Promise<unknown> {
   const e = await endpoint(a);
   const r = await fetch(e.url + path, { method, headers: { authorization: `Bearer ${e.admin}` }, signal: AbortSignal.timeout(5000) });
@@ -418,7 +471,8 @@ async function peersCmd(a: Args): Promise<void> {
     for (const p of r.peers) {
       out(
         `  ${(p.label ?? '').padEnd(8)} ${p.peerId.slice(-10)}  ${p.connected ? (p.relayed ? 'relayed ' : 'direct  ') : 'offline '}` +
-          `${p.available ? 'available  ' : 'unavailable'} state=${p.state ?? '-'} jobs=${p.activeJobs ?? '-'}/${p.queueLength ?? '-'} rtt=${p.rttMs ?? '-'}ms fails=${p.consecutiveFailures}`,
+          `${p.available ? 'available  ' : 'unavailable'} state=${p.state ?? '-'} jobs=${p.activeJobs ?? '-'}/${p.queueLength ?? '-'} rtt=${p.rttMs ?? '-'}ms fails=${p.consecutiveFailures}` +
+          ` hw=${p.accel ?? '-'}${p.measuredTokPerS ? ` measured=${p.measuredTokPerS} tok/s` : ''} models=${(p.models ?? []).join(',') || '-'}`,
       );
     }
     return;
@@ -645,6 +699,8 @@ async function main(): Promise<void> {
       return modelCmd(a);
     case 'models':
       return modelsCmd(a);
+    case 'gpu':
+      return gpuCmd(a);
     case 'init':
       return init(a);
     case 'join-info': {

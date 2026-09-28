@@ -118,6 +118,7 @@ The body is `{"error": {"message", "type", "code", "retry_after_ms"?, "mesh"?}}`
 - `GET /v1/models`: models some reachable node is serving now (usable by OpenAI clients). Each entry's `mesh` field holds name, thinking capability, context, download size, RAM, licence and `available: {nodes, local}`.
 - `GET /v1/models?all=1`: the whole vetted catalog. For the node's operator, each entry also has `local: {state, progress, error, fit}`, where state is `not_installed`, `downloading`, `verifying`, `starting`, `serving`, `installed` or `failed`.
 - `POST /admin/models/:id/install`: fit check, then resumable verified download, start and advertise, in the background. Poll `GET /admin/models` for progress.
+- `GET /admin/runtime`: detected GPUs, installed GPU builds, and the current `accel` (`cpu`/`cuda`/`vulkan`). `POST /admin/runtime {"accel": "cuda"}` switches, installing the pinned GPU build first if needed (see [gpu.md](gpu.md)).
 - `POST /admin/models/:id/cancel` stops a download (the partial file is kept for resuming). `POST /admin/models/:id/unhost` stops serving. `DELETE /admin/models/:id` deletes a file that is not served.
 
 Thinking arrives as `delta.reasoning_content` in streams, and as `message.reasoning_content` in non-streaming replies. `mesh.model` and `mesh.effort` report what was used.

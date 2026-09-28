@@ -65,6 +65,13 @@ export const NodeConfigSchema = z.strictObject({
       mlock: z.boolean().default(false),
       mmap: z.boolean().default(true),
       startupTimeoutMs: ms(120_000),
+      /**
+       * GPU acceleration: 'none' (CPU), 'cuda' (NVIDIA) or 'vulkan' (any vendor). The operator can
+       * change it from the UI/CLI (saved in models-state.json). Uses the pinned GPU build of llama.cpp.
+       */
+      gpu: z.enum(['none', 'cuda', 'vulkan']).default('none'),
+      /** Model layers to put on the GPU (99 = all). Lower it to fit bigger models in less VRAM. */
+      gpuLayers: z.number().int().min(0).max(999).default(99),
       /** Fake runtime only: per-token delay. */
       fakeTokenDelayMs: z.number().int().min(0).max(10_000).default(20),
       /** Fake runtime only: the fake model IDs this node hosts (IDs ending in "-think" support thinking). */
@@ -205,6 +212,7 @@ function applyEnv(raw: Record<string, any>): Record<string, any> {
   if (env.MESH_RUNTIME_API_KEY_FILE) set(['runtime', 'apiKeyFile'], env.MESH_RUNTIME_API_KEY_FILE);
   if (env.MESH_RUNTIME_BINARY) set(['runtime', 'binary'], env.MESH_RUNTIME_BINARY);
   if (env.MESH_THREADS) set(['runtime', 'threads'], Number(env.MESH_THREADS));
+  if (env.MESH_GPU) set(['runtime', 'gpu'], env.MESH_GPU);
   if (env.MESH_MODEL_DIR) set(['model', 'dir'], env.MESH_MODEL_DIR);
   if (env.MESH_MODEL_CATALOG) set(['model', 'catalog'], env.MESH_MODEL_CATALOG);
   return raw;

@@ -153,7 +153,11 @@ export function NetworkView({ snap, error, gateway }: { snap: Snapshot | null; e
                       <td className={`py-2 pr-4 ${p.available ? 'text-pine' : 'text-slate'}`}>
                         {p.available ? 'yes' : !p.connected ? 'no' : !p.modelCompatible ? 'different model' : p.state === 'draining' ? 'draining' : 'no'}
                       </td>
-                      <td className="py-2 pr-4 text-xs">{p.models?.length ? p.models.join(', ') : '–'}</td>
+                      <td className="py-2 pr-4 text-xs">
+                        {p.models?.length ? p.models.join(', ') : '–'}
+                        {p.accel && p.accel !== 'cpu' && <span className="ml-1 rounded bg-moon-soft px-1">GPU</span>}
+                        {p.measuredTokPerS ? <span className="num ml-1 text-slate">{p.measuredTokPerS} tok/s measured</span> : null}
+                      </td>
                       <td className="py-2 pr-4">{p.activeJobs == null ? '–' : `${p.activeJobs} / ${p.queueLength}`}</td>
                       <td className="py-2 pr-4">{ms(p.rttMs)}</td>
                       <td className="py-2 pr-4">{p.lastStatusAgeMs == null ? 'never' : `${ms(p.lastStatusAgeMs)} ago`}</td>

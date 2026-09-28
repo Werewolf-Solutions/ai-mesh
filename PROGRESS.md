@@ -54,3 +54,9 @@ Status legend: [x] done and verified · [~] implemented, partially verified · [
 - [x] UI: model picker, effort control, thinking display, Models page
 - [x] Docker image contains llama.cpp; one container per node
 - [ ] Qwen3 8B in Docker, ARM64/macOS, GPU builds (not tested)
+
+## GPU sharing
+- [x] Pinned CUDA 12.8 and Vulkan builds of llama.cpp b11223; `./mesh gpu`, admin API, UI switch
+- [x] GPU-aware fit checks (VRAM + remaining RAM); models that no longer fit are stopped on switch
+- [x] Gateways measure real speed per node and model; time-based routing prefers faster nodes
+- [ ] GPU in Docker, AMD/Intel Vulkan and Metal (not tested)

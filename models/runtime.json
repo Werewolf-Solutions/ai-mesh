@@ -25,5 +25,30 @@
       "tested": false
     }
   },
-  "binarySha256Provenance": "GitHub release asset digests for tag b11223; linux-x64 independently recomputed after download on 2026-09-28."
+  "binarySha256Provenance": "GitHub release asset digests for tag b11223; linux-x64 independently recomputed after download on 2026-09-28.",
+  "gpuBinaries": {
+    "linux-x64-cuda": {
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11223/llama-b11223-bin-ubuntu-cuda-12.8-x64.tar.gz",
+      "sha256": "66290e1ab6841163b9c6a3acbeffc56197e17cade008e05f2e68039db66c2bd8",
+      "dir": "llama-b11223",
+      "extra": [
+        {
+          "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11223/cudart-llama-b11223-bin-ubuntu-cuda-12.8-x64.tar.gz",
+          "sha256": "ccd457a5835f30f46d0ffc36de07bfa6f78f5cac1ccea563644150ff7c79447e",
+          "dir": "cudart-llama-b11223-bin-ubuntu-cuda-12.8-x64"
+        }
+      ],
+      "requires": "NVIDIA GPU with driver >= 525 (CUDA 12 minor-version compatibility)",
+      "tested": true,
+      "testedOn": "RTX 3060 12 GB, driver 580.178.04, 2026-09-28: Qwen3 8B Q4_K_M 58 tok/s generation, 363 tok/s prompt, 5.8 GB VRAM"
+    },
+    "linux-x64-vulkan": {
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11223/llama-b11223-bin-ubuntu-vulkan-x64.tar.gz",
+      "sha256": "d4505b5752a967e070fb418ec1d365d4448d692eccea1d7d4d0a6e75b7300025",
+      "dir": "llama-b11223",
+      "requires": "Any Vulkan 1.2 GPU (NVIDIA, AMD, Intel) with its Vulkan driver and libvulkan1",
+      "tested": true,
+      "testedOn": "RTX 3060 12 GB via NVIDIA Vulkan driver, 2026-09-28: Qwen3 8B Q4_K_M 45 tok/s generation"
+    }
+  }
 }

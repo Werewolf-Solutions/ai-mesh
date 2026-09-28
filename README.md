@@ -11,6 +11,7 @@ Each full node:
 - lets you **choose a model and an effort level** ([docs/models.md](docs/models.md)):
   - Fast answers straight away; Balanced and Thorough let models with a thinking mode reason first, within a token budget the mesh enforces.
   - A model nobody runs yet can be downloaded and started on your own node with one click. It is SHA-256 verified, resumable, and checked to fit your RAM and disk, and it is then served to the whole pack.
+- lets you **share a GPU**: `./mesh gpu on` (or *Models → Use the GPU*) runs your models on it (Qwen3 8B: 6 → 58 tokens/s on an RTX 3060), and other nodes send you more work because they measure that you answer faster ([docs/gpu.md](docs/gpu.md))
 - answers questions with a real local model: a pinned llama.cpp runtime runs as a separate process or container, and the model file is SHA-256 verified before every load
 - has its own persistent Ed25519 identity, and accepts only the peers its operator approved
 - finds other approved peers through bootstrap addresses, a peer cache, and bounded peer exchange; no central coordinator is required
@@ -111,6 +112,7 @@ Full steps, including a second relay, are in [docs/operations.md](docs/operation
 |---|---|
 | `./mesh doctor` | Prerequisite checks (Node, CPU/RAM/disk, Docker, model hash, runtime build, permissions, ports) |
 | `./mesh runtime install` | Download the pinned llama.cpp build (SHA-256 checked) |
+| `./mesh gpu [status\|on [cuda\|vulkan]\|off]` | Run this node's models on its GPU (downloads the pinned GPU build first) or the CPU |
 | `./mesh models [install\|unhost\|remove] ID` | List the model catalog; download and serve, stop, or delete a model |
 | `./mesh model download` / `import <file>` / `verify` `[--model ID]` | Get, import or re-verify a catalog model's GGUF |
 | `./mesh init` | Create config, identity and HTTP tokens (never overwrites) |
@@ -140,6 +142,7 @@ What was run, and what could not be, is recorded in [docs/testing.md](docs/testi
 - [Ubuntu operations guide](docs/operations.md)
 - [Security assumptions](docs/security.md)
 - [Models, effort and sharing compute](docs/models.md)
+- [Sharing a GPU](docs/gpu.md)
 - [Pack memory](docs/pack-memory.md)
 - [Model provenance](docs/model.md)
 - [Benchmarks](docs/benchmarks.md) · [Testing](docs/testing.md) · [Roadmap](docs/roadmap.md) · [Progress checklist](PROGRESS.md)

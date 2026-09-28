@@ -83,11 +83,13 @@ Candidates are:
 - directly connected authorised peers that are *available* (fresh status, under the failure threshold) and whose status record lists the requested model as ready in `modelLoad`
 
 ```
-score = (that model's active + queued + requests this gateway already has outstanding there) / maxConcurrency
-        + (remote ? 0.5 + rttMs/1000 : 0)
+expected seconds = (that model's active + queued + requests this gateway already has outstanding there) / maxConcurrency + 1)
+                   × 256 / measured tokens per second  + (remote ? 0.5 + rttMs/1000 : 0)
 ```
 
-The lowest score wins, and ties break by peer ID. An idle local node therefore wins, a busy local node spills to an idle peer, and remote load (a status hint up to 5 s old) is corrected by what this gateway itself has in flight. Workers still enforce their own limits atomically.
+The speed is measured by this gateway from that node's own answers for that model, never taken from the node's claims. A hardware hint (cpu/cuda/vulkan) is only a prior until the first measurement. See [gpu.md](gpu.md#how-the-pack-decides-who-answers).
+
+The lowest expected time wins, and ties break by peer ID. At equal speed an idle local node wins and a busy one spills to an idle peer; a measurably faster (GPU) peer wins even over an idle local CPU, and remote load (a status hint up to 5 s old) is corrected by what this gateway itself has in flight. Workers still enforce their own limits atomically.
 
 Overrides:
 

@@ -203,6 +203,18 @@ export async function buildHttpServer(deps: HttpDeps): Promise<FastifyInstance> 
       return sendError(reply, err instanceof MeshError ? err : new MeshError('internal', (err as Error).message));
     }
   });
+  /** CPU/GPU for this node's models (operator only). */
+  app.get('/admin/runtime', { preHandler: requireRole('admin') }, async () => deps.models.runtimeView());
+  app.post('/admin/runtime', { preHandler: requireRole('admin') }, async (req, reply) => {
+    const p = z.strictObject({ accel: z.enum(['cpu', 'cuda', 'vulkan']) }).safeParse(req.body);
+    if (!p.success) return sendError(reply, new MeshError('bad_request', 'accel must be cpu, cuda or vulkan'));
+    try {
+      await deps.models.setAccel(p.data.accel);
+      return { accepted: true };
+    } catch (err) {
+      return sendError(reply, err instanceof MeshError ? err : new MeshError('internal', (err as Error).message));
+    }
+  });
   app.post('/admin/models/:id/cancel', { preHandler: requireRole('admin') }, async (req) => {
     deps.models.cancelInstall((req.params as { id: string }).id);
     return { ok: true };

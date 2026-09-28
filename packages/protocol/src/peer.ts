@@ -75,6 +75,8 @@ export const StatusRecord = z.strictObject({
       }),
     )
     .max(LIMITS.maxModelFingerprints),
+  /** Hardware hint: 'cpu', 'cuda', 'vulkan' or 'metal'. Routing only uses it until speed is measured locally. */
+  accel: z.enum(['cpu', 'cuda', 'vulkan', 'metal']).optional(),
   /** The sender's own advertised addresses (authoritative only for the sender itself). */
   addrs: z.array(multiaddrStr).max(LIMITS.maxAddrsPerPeer),
   /** Sender's clock, informational only; freshness uses the receiver's clock. */

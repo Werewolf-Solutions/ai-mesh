@@ -22,6 +22,7 @@ import { atomicWriteJson, exists, readJsonIfExists } from '../util/fs.js';
 import type { Logger } from '../util/log.js';
 import { WorkerPool } from '../worker/pool.js';
 import { WorkerService } from '../worker/service.js';
+import { detectGpus, estimateVramMB, gpuBinaryPath, gpuBuildInstalled, installGpuBuild, type Accel, type GpuBackend, type GpuInfo } from './gpu.js';
 
 export interface HostedModel {
   entry: CatalogEntry;
@@ -40,7 +41,7 @@ interface Job {
   ctl: AbortController;
 }
 
-const StateFile = z.object({ version: z.literal(1), hosted: z.array(z.string()).max(16) });
+const StateFile = z.object({ version: z.literal(1), hosted: z.array(z.string()).max(16), accel: z.enum(['cpu', 'cuda', 'vulkan']).optional() });
 
 /** Synthetic catalog entries for the fake test runtime. */
 function fakeEntry(id: string, order: number): CatalogEntry {
@@ -68,6 +69,10 @@ export class ModelManager {
   private readonly jobs = new Map<string, Job>();
   private readonly failures = new Map<string, string>();
   private hosted: string[] = [];
+  /** CPU or GPU backend for this node's runtimes. */
+  accel: Accel = 'cpu';
+  private runtimeJob: { backend: Accel; phase: 'downloading' | 'restarting'; done: number; total: number; error?: string } | null = null;
+  private gpus: GpuInfo[] = [];
   private readonly stateFile: string;
   readonly fake: boolean;
 
@@ -94,7 +99,14 @@ export class ModelManager {
       return;
     }
     for (const e of await loadCatalog(this.deps.cfg.model.catalog)) this.catalog.set(e.id, e);
-    const saved = await readJsonIfExists(this.stateFile).then((r) => (r ? StateFile.parse(r).hosted : null)).catch(() => null);
+    const state = await readJsonIfExists(this.stateFile).then((r) => (r ? StateFile.parse(r) : null)).catch(() => null);
+    const saved = state?.hosted ?? null;
+    this.accel = state?.accel ?? (this.deps.cfg.runtime.gpu === 'none' ? 'cpu' : this.deps.cfg.runtime.gpu);
+    this.gpus = await detectGpus();
+    if (this.accel !== 'cpu' && !gpuBuildInstalled(this.deps.runtimePin, this.accel)) {
+      this.deps.log.warn({ accel: this.accel }, 'GPU build not installed; using the CPU until it is (./mesh gpu on)');
+      this.accel = 'cpu';
+    }
     this.hosted = (saved ?? this.deps.cfg.model.host).filter((id) => {
       if (this.catalog.has(id)) return true;
       this.deps.log.warn({ model: id }, 'hosted model is not in the catalog; ignored');
@@ -141,7 +153,8 @@ export class ModelManager {
       name: e.id,
       thinking: e.capabilities.thinking,
       mode: cfg.runtime.mode,
-      binary: cfg.runtime.binary,
+      binary: this.accel === 'cpu' ? cfg.runtime.binary : (gpuBinaryPath(this.deps.runtimePin, this.accel) ?? cfg.runtime.binary),
+      gpuLayers: this.accel === 'cpu' ? 0 : cfg.runtime.gpuLayers,
       url: cfg.runtime.url,
       apiKeyFile: cfg.runtime.apiKeyFile,
       modelPath: modelPath(e, cfg.model.dir),
@@ -203,7 +216,7 @@ export class ModelManager {
   }
 
   private async persist(): Promise<void> {
-    await atomicWriteJson(this.stateFile, { version: 1, hosted: this.hosted });
+    await atomicWriteJson(this.stateFile, { version: 1, hosted: this.hosted, accel: this.accel });
   }
 
   /** Resource check before installing/hosting: RAM for all hosted models + this one, and disk for the download. */
@@ -213,12 +226,21 @@ export class ModelManager {
     if (this.fake) return { ok: true, reasons: [] };
     const reasons: string[] = [];
     const MB = 2 ** 20;
-    const hostedRam = [...this.hosts.values()].filter((h) => h.entry.id !== id && h.state !== 'failed').reduce((n, h) => n + h.entry.resources.ramMB, 0);
+    const others = [...this.hosts.values()].filter((h) => h.entry.id !== id && h.state !== 'failed');
     const total = totalmem() / MB;
-    if (hostedRam + e.resources.ramMB > total * 0.85) {
-      reasons.push(`needs about ${(e.resources.ramMB / 1024).toFixed(1)} GB of RAM; with the models already running that is more than this machine has (${(total / 1024).toFixed(1)} GB)`);
-    } else if (e.resources.ramMB > freemem() / MB + 256) {
-      reasons.push(`needs about ${(e.resources.ramMB / 1024).toFixed(1)} GB of free RAM; ${(freemem() / 2 ** 30).toFixed(1)} GB is free right now`);
+    const ramOf = (x: CatalogEntry) => (this.accel === 'cpu' ? x.resources.ramMB : Math.max(512, x.resources.ramMB - this.vramOf(x)));
+    const hostedRam = others.reduce((n, h) => n + ramOf(h.entry), 0);
+    if (hostedRam + ramOf(e) > total * 0.85) {
+      reasons.push(`needs about ${(ramOf(e) / 1024).toFixed(1)} GB of RAM; with the models already running that is more than this machine has (${(total / 1024).toFixed(1)} GB)`);
+    } else if (ramOf(e) > freemem() / MB + 256) {
+      reasons.push(`needs about ${(ramOf(e) / 1024).toFixed(1)} GB of free RAM; ${(freemem() / 2 ** 30).toFixed(1)} GB is free right now`);
+    }
+    if (this.accel !== 'cpu') {
+      const vram = this.gpus.find((g) => g.vramMB)?.vramMB;
+      const used = others.reduce((n, h) => n + this.vramOf(h.entry), 0);
+      if (vram && used + this.vramOf(e) > vram * 0.95) {
+        reasons.push(`needs about ${(this.vramOf(e) / 1024).toFixed(1)} GB of GPU memory; with the models already on the GPU that is more than its ${(vram / 1024).toFixed(0)} GB (switch it to the CPU or stop another model)`);
+      }
     }
     if (!(await exists(modelPath(e, this.deps.cfg.model.dir)))) {
       try {
@@ -232,6 +254,89 @@ export class ModelManager {
     if (this.deps.cfg.runtime.mode === 'external') reasons.push('this node uses an external runtime container and can only serve its configured model');
     if (!this.deps.cfg.model.allowInstall) reasons.push('installing models is disabled on this node (model.allowInstall)');
     return { ok: reasons.length === 0, reasons };
+  }
+
+  vramOf(e: CatalogEntry): number {
+    return (e.resources as { vramMB?: number }).vramMB ?? estimateVramMB(e.artifact.sizeBytes, e.serving.contextTokens);
+  }
+
+  /** What this machine offers and uses: for the operator's GPU switch. */
+  async runtimeView() {
+    this.gpus = await detectGpus();
+    const pin = this.deps.runtimePin as unknown as { gpuBinaries?: Record<string, { requires?: string }> };
+    const key = (b: GpuBackend) => `${process.platform}-${process.arch}-${b}`;
+    return {
+      accel: this.accel,
+      gpus: this.gpus,
+      builds: (['cuda', 'vulkan'] as const).map((b) => ({
+        backend: b,
+        pinned: !!pin.gpuBinaries?.[key(b)],
+        installed: gpuBuildInstalled(this.deps.runtimePin, b),
+        requires: pin.gpuBinaries?.[key(b)]?.requires ?? null,
+        usable: this.gpus.some((g) => g.backends.includes(b)),
+      })),
+      job: this.runtimeJob,
+    };
+  }
+
+  /**
+   * Switch this node between CPU and GPU. Installs the pinned GPU build first
+   * if needed (background, verified), then restarts every hosted model on the
+   * new backend. Peers see the change on the next status exchange.
+   */
+  async setAccel(target: Accel): Promise<void> {
+    if (this.fake) throw new MeshError('bad_request', 'the fake runtime has no GPU mode');
+    if (this.deps.cfg.runtime.mode === 'external') throw new MeshError('bad_request', 'this node uses an external runtime');
+    if (target !== 'cpu' && !(await detectGpus()).some((g) => g.backends.includes(target))) {
+      throw new MeshError('bad_request', `no GPU usable with ${target} was found on this computer`);
+    }
+    if (this.runtimeJob && !this.runtimeJob.error) throw new MeshError('bad_request', 'a GPU switch is already in progress');
+    const apply = async () => {
+      this.runtimeJob = { backend: target, phase: 'restarting', done: 0, total: 0 };
+      this.accel = target;
+      await this.persist();
+      for (const id of [...this.hosted]) {
+        const h = this.hosts.get(id);
+        if (h) {
+          h.state = 'stopping';
+          h.pool.draining = true;
+          const end = Date.now() + 10_000;
+          while ((h.pool.activeCount > 0 || h.pool.queuedCount > 0) && Date.now() < end) await new Promise((r) => setTimeout(r, 100));
+          await h.adapter.stop().catch(() => undefined);
+          this.hosts.delete(id);
+        }
+        const fit = await this.fit(id);
+        if (!fit.ok) {
+          // Doesn't fit on the new backend (e.g. an 8B model moving from GPU to CPU): stop it instead of exhausting memory.
+          this.hosted = this.hosted.filter((x) => x !== id);
+          this.failures.set(id, `stopped when switching to ${target}: ${fit.reasons.join('; ')}`);
+          await this.persist();
+          this.deps.log.warn({ model: id, reasons: fit.reasons }, 'model does not fit on the new backend; stopped');
+          continue;
+        }
+        await this.startModel(id).catch((err) => this.deps.log.error({ model: id, err: (err as Error).message }, 'model failed to start after switching'));
+      }
+      this.runtimeJob = null;
+      this.deps.log.info({ accel: target }, 'runtimes restarted');
+    };
+    if (target === 'cpu' || gpuBuildInstalled(this.deps.runtimePin, target)) {
+      void apply();
+      return;
+    }
+    const job: { backend: Accel; phase: 'downloading' | 'restarting'; done: number; total: number; error?: string } = { backend: target, phase: 'downloading', done: 0, total: 0 };
+    this.runtimeJob = job;
+    void (async () => {
+      try {
+        await installGpuBuild(this.deps.runtimePin, target as GpuBackend, (d, t) => {
+          job.done = d;
+          job.total = t ?? job.total;
+        });
+        await apply();
+      } catch (err) {
+        job.error = (err as Error).message.slice(0, 300);
+        this.deps.log.warn({ backend: target, err: job.error }, 'GPU build install failed');
+      }
+    })();
   }
 
   /** Download (if needed), verify, start and host a catalog model. Runs in the background; poll views(). */
@@ -323,6 +428,7 @@ export class ModelManager {
         maxOutputTokens: e.serving.maxOutputTokens,
         downloadBytes: e.artifact.sizeBytes,
         ramMB: e.resources.ramMB,
+        vramMB: this.vramOf(e),
         tested: e.resources.tested,
         fingerprint: fp,
         available: { nodes: servedBy(fp) + (localServing ? 1 : 0), local: localServing },

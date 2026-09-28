@@ -6,9 +6,9 @@ Environment: Ubuntu 24.04 x86-64, Ryzen 7 3700X, 16 GB RAM, Docker 29.8.1 / Comp
 
 | Command | Runtime | Result |
 |---|---|---|
-| `pnpm test:unit` | none | **24/24 passed** |
-| `pnpm test:integration` | **FAKE deterministic adapter**, real separate OS processes, real libp2p | **56/56 passed** |
-| `pnpm test:real` | **real llama.cpp b11223 + verified model** | **14/14 passed**, including meaning-match scoring, pack-memory retrieval, installing a catalog model through the admin API, effort on/off, routing by model across nodes, and the thinking budget stopping Qwen3 4B (the one "skipped" entry is the placeholder that only runs when the model is missing) |
+| `pnpm test:unit` | none | **25/25 passed** |
+| `pnpm test:integration` | **FAKE deterministic adapter**, real separate OS processes, real libp2p | **57/57 passed** |
+| `pnpm test:real` | **real llama.cpp b11223 + verified model** | **15/15 passed** (plus a GPU test when an NVIDIA GPU is present, which passed on an RTX 3060), including meaning-match scoring, pack-memory retrieval, installing a catalog model through the admin API, effort on/off, routing by model across nodes, and the thinking budget stopping Qwen3 4B (the one "skipped" entry is the placeholder that only runs when the model is missing) |
 
 The fake adapter emits placeholder tokens (`t0 t1 …`) and supports fault directives such as `[[fake:crash_after=3]]`. Its guard rails:
 
@@ -68,6 +68,15 @@ It is never used by real deployments.
 - **Real download through the node:** cancelled at 318 MB, resumed, byte-identical file, then served.
 - **Docker 2-node cluster:** node1 installed Qwen3.5 inside its container; node2's request with thinking was served by node1 (391).
 
+## GPU sharing (executed on an RTX 3060 12 GB)
+
+- CUDA and Vulkan builds of llama.cpp b11223 were downloaded, verified and benchmarked (docs/gpu.md).
+- `./mesh gpu on cuda` switched a running node in 2.4 s. `./mesh gpu on vulkan` with the build deleted first downloaded, verified and restarted everything in 12 s.
+- Qwen3 8B: refused on the CPU (RAM check), then installed and served on the GPU (58 tok/s).
+- In a real CPU + GPU pair, the CPU node sent all its requests to the GPU node.
+- UI: the Models page GPU card switched GPU → CPU → GPU.
+- `tests/integration/speed.test.ts`: the gateway learns the faster node from measured answers.
+
 ## Not validated (the environment could not provide it)
 
 | Item | Why not | How to run it |
@@ -81,4 +90,6 @@ It is never used by real deployments.
 | Native offline test with network namespaces | Ubuntu blocks unprivileged user namespaces (`apparmor_restrict_unprivileged_userns=1`); host security settings were not changed | Docker `internal` network used instead |
 | Ten nodes each running the real model | Deliberately not run on one laptop | `./mesh cluster generate --nodes 10 && ./mesh cluster up …` on a host with ≥ 4 GB RAM |
 | GPU acceleration | Out of scope for the CPU baseline | — |
+| GPU inside Docker | Needs the NVIDIA Container Toolkit and a GPU image; not built | Run a native node for GPU sharing |
+| AMD / Intel GPUs via Vulkan, macOS Metal | No such hardware here | `./mesh gpu on vulkan` |
 | Qwen3 8B inside Docker | Needs `MESH_MEM` ≥ 10g; only run natively | `MESH_MEM=10g`, then install from the Models page |
