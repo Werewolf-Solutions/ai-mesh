@@ -40,21 +40,31 @@ The prompt is a 1,178-word text (about 1,400 tokens) plus an instruction to summ
 
 ### Scoring the summaries
 
-Each summary is compared with an ideal one-sentence summary (editable in the UI) on the gateway:
+Each summary is compared on the gateway with an ideal answer to the question ("what is the main lesson of the text?"). The ideal was written by hand and is editable in the UI:
 
-- **Meaning match:** cosine similarity of sentence embeddings from bge-small-en-v1.5 (Q8_0, MIT). It is shown on a scale from an unrelated sentence (0%) to the ideal summary itself (100%).
+> A group survives a long, hard journey when knowledge and work are shared by many members instead of relying on one leader, so it keeps going even when some individuals fail.
+
+- **Meaning match:** cosine similarity of bge-small-en-v1.5 embeddings (Q8_0, MIT), shown on a scale from an unrelated sentence (0%) to the ideal itself (100%).
 - **Word overlap:** ROUGE-L F1, with no model.
 
-Calibration against the default ideal summary:
+Measured on a real 3-node cluster (2026-09-28). Each run adds a random tag to the prompt, so even temperature-0 runs differ slightly.
 
 | Candidate | Cosine | Meaning match | Word overlap |
 |---|---|---|---|
-| A faithful paraphrase written by hand | 0.89 | 85% | 35% |
-| A loosely related sentence ("wolves travel a long way every winter…") | 0.73 | 61% | 8% |
-| Real SmolLM2-135M summaries (4 runs) | 0.57–0.60 | 39–43% | 10–15% |
-| An unrelated sentence (stock market) | 0.26 | 0% | 8% |
+| Hand-written paraphrase of the ideal | 0.91 | 86% | 27% |
+| SmolLM2 best run (t=0.7): "…success is largely due to the shared knowledge…" | 0.71 | 55% | 14% |
+| SmolLM2, 3 runs at t=0 (the UI setting) | 0.59–0.67 | 38–49% | 8–14% |
+| SmolLM2, 5 runs at t=0.7 | 0.54–0.71 | 30–55% | 8–14% |
+| Loosely related sentence ("wolves travel a long way every winter…") | 0.54 | 30% | 14% |
+| Unrelated sentence (stock market) | 0.33 | 0% | 0% |
 
-Labels: ≥ 70% "close to the ideal", ≥ 35% "partly matches", below that "far from the ideal". These are rough guides from this calibration, not grades. SmolLM2-135M's summaries land in "partly matches": they are about the right text but miss its point.
+What this shows:
+
+- Summaries that name the actual lesson (shared knowledge, surviving losses) score highest.
+- Summaries that only retell the plot ("the pack spends the warm months in a valley…") score about the same as a loosely related sentence.
+- Word overlap barely separates them: even the faithful paraphrase shares only 27% of the wording, so meaning match is the more useful score.
+
+Labels in the UI: ≥ 70% "close to the ideal", ≥ 35% "partly matches", below that "far from the ideal". These are rough guides from this calibration, not grades. SmolLM2-135M mostly lands at "partly matches": it reads the right text but rarely states its point.
 
 Reading speed on a long prompt (≈ 370 tok/s) is a little lower than on a short one (≈ 400 tok/s): attention cost grows with context length. Routing to a peer adds no measurable reading time; the network cost appears only in the browser's "first word" time (a few ms on one host).
 

@@ -126,7 +126,7 @@ function ReadingTest({ gateways, peers, selfPeerId, labels }: Props) {
   const [target, setTarget] = useState('auto');
   const [count, setCount] = useState(1);
   const [runs, setRuns] = usePersistent<ReadingRun[]>('wam.readingRuns', []);
-  const [reference, setReference] = usePersistent<string>('wam.readingReference', READING_REFERENCE);
+  const [reference, setReference] = usePersistent<string>('wam.readingReference.v2', READING_REFERENCE);
   const [editingRef, setEditingRef] = useState(false);
   const [refDraft, setRefDraft] = useState(reference);
   const [open, setOpen] = useState<Set<string>>(new Set());

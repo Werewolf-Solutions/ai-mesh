@@ -30,7 +30,7 @@ When the researchers put all of these observations together, a simple picture em
  * replace it in the UI; each run records the reference it was scored against.
  */
 export const READING_REFERENCE =
-  'The pack reaches its winter home because many wolves share the knowledge and the hard work, pass warnings quickly, agree on meeting places, and keep going even when some members fall behind, so the group survives when individuals fail.';
+  'A group survives a long, hard journey when knowledge and work are shared by many members instead of relying on one leader, so it keeps going even when some individuals fail.';
 
 /** The instruction sent with the text. Short answer → the timing is dominated by reading. */
 export const READING_INSTRUCTION = 'Read the following text. Then answer in one short sentence: what is the main lesson of the text?';
