@@ -25,6 +25,7 @@ import { PeerManager } from './p2p/peers.js';
 import type { InferenceAdapter } from './runtime/adapter.js';
 import { FakeAdapter, FAKE_FINGERPRINT } from './runtime/fake.js';
 import { LlamaCppAdapter } from './runtime/llamacpp.js';
+import { Scorer } from './scoring/scorer.js';
 import { loadSecrets, TokenChecker } from './secrets.js';
 import { createLogger, type Logger } from './util/log.js';
 import { SOFTWARE_VERSION } from './version.js';
@@ -45,6 +46,7 @@ export class MeshNode {
   peers!: PeerManager;
   gateway!: Gateway;
   http!: FastifyInstance;
+  scorer!: Scorer;
   readonly metrics = new Metrics();
   private startedAt = Date.now();
   private state: 'starting' | 'ready' | 'not_ready' | 'draining' = 'starting';
@@ -137,6 +139,16 @@ export class MeshNode {
       log: this.log.child({ component: 'gateway' }),
     });
 
+    this.scorer = new Scorer({
+      enabled: this.cfg.scorer.enabled,
+      binary: this.cfg.runtime.binary,
+      manifestPath: this.cfg.scorer.manifest,
+      modelDir: this.cfg.model.dir,
+      dataDir: this.dataDir,
+      threads: this.cfg.scorer.threads,
+      log: this.log.child({ component: 'scorer' }),
+    });
+
     // ---- HTTP first, so liveness works while the model loads.
     const secrets = await loadSecrets(this.dataDir);
     this.http = await buildHttpServer({
@@ -154,6 +166,8 @@ export class MeshNode {
       metrics: () => this.metricsView(),
       modelInfo: () => this.modelInfo(),
       reloadAdmission: () => this.admission.load(),
+      score: (reference, candidates) => this.scorer.score(reference, candidates),
+      scorerStatus: () => this.scorer.status(),
     });
     await this.http.listen({ host: this.cfg.http.host, port: this.cfg.http.port });
 
@@ -183,7 +197,7 @@ export class MeshNode {
     );
 
     // ---- model (after networking, so the node can gateway to peers while loading)
-    void this.loadModel(fake);
+    void this.loadModel(fake).then(() => this.scorer.start());
   }
 
   private async loadModel(fake: boolean): Promise<void> {
@@ -329,6 +343,7 @@ export class MeshNode {
       await this.http?.close().catch(() => undefined);
       await Promise.resolve(this.libp2p?.stop()).catch(() => undefined);
       await this.adapter?.stop().catch(() => undefined);
+      await this.scorer?.stop().catch(() => undefined);
       this.log?.info('stopped');
     })();
     return this.stopping;

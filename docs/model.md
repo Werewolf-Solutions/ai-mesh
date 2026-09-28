@@ -17,6 +17,15 @@ Everything below is recorded in `models/manifest.json`. Nodes load a model only 
 | Runtime compatibility | llama.cpp b11223 (commit `4da633776`): image `ghcr.io/ggml-org/llama.cpp:server-b11223@sha256:8fdfad18…`; linux-x64 binary SHA-256 `9ce07ebd…`. The node checks `build_info` = `b11223-4da633776` at startup. |
 | Serving limits | 2 048-token context (prompt + completion, validated with the runtime's own tokenizer), ≤ 256 output tokens |
 
+## Optional scoring model
+
+The Tests page scores summaries with **bge-small-en-v1.5** by BAAI (MIT licence). It uses the GGUF published by ggml-org at revision `f2068edd9b54f2a369549ccc71f70ed273a2a801`: file `bge-small-en-v1.5-q8_0.gguf`, 36 685 152 bytes, SHA-256 `f046db1dc724cf4f6f0a0c5917e922823b73eb1d27b8f9a9c2797f7866974804` (the Hugging Face LFS ID, recomputed after download). Everything is recorded in `models/scorer-manifest.json`.
+
+- Install it with `./mesh model download --scorer`, or `import`/`verify` it the same way. A node starts the scorer only if the file matches.
+- It runs as a separate llama.cpp process in embedding mode (`--pooling cls`), on loopback only.
+- It is never used to answer requests. It does not change the mesh model fingerprint and is not required.
+- In the Docker image there is no local llama.cpp binary, so the scorer reports "not installed" and the UI shows word overlap only.
+
 ## Getting the model
 
 ```bash

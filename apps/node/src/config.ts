@@ -122,6 +122,17 @@ export const NodeConfigSchema = z.strictObject({
     })
     .prefault({}),
   shutdown: z.strictObject({ graceMs: ms(15_000, 0) }).prefault({}),
+  /**
+   * Optional summary scorer for the UI's reading test: a small embedding model
+   * run by llama.cpp on loopback. Starts only if its model file is installed.
+   */
+  scorer: z
+    .strictObject({
+      enabled: z.boolean().default(true),
+      manifest: z.string().default(join(REPO_ROOT, 'models/scorer-manifest.json')),
+      threads: z.number().int().min(1).max(64).default(1),
+    })
+    .prefault({}),
 });
 
 export type NodeConfig = z.infer<typeof NodeConfigSchema>;

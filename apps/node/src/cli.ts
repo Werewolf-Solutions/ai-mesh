@@ -16,6 +16,7 @@ import { generateCluster } from './cluster.js';
 import { FILES, loadConfig, NodeConfigSchema, resolveDataDir, type NodeConfigInput } from './config.js';
 import { downloadVerified, importModel, loadManifest, platformKey, sha256File, verifyModel, type Manifest } from './model.js';
 import { approveFromJoinFile, approvePeer, initNode, joinInfo, revokePeer } from './onboarding.js';
+import { ScorerManifestSchema } from './scoring/scorer.js';
 import { loadSecrets } from './secrets.js';
 import { atomicWriteFile, exists, looseModeWarning, readJsonIfExists } from './util/fs.js';
 import { REPO_ROOT, SOFTWARE_VERSION } from './version.js';
@@ -30,6 +31,7 @@ Setup
   model download [--dir DIR]            Download the pinned GGUF once (SHA-256 verified)
   model import <file.gguf> [--dir DIR]  Import an existing local GGUF (no network), verify, copy into DIR
   model verify [--dir DIR]              Re-hash the model file against models/manifest.json
+  model download|import|verify --scorer Same, for the optional embedding model that scores summaries in the UI
 
 Node
   init [--data DIR] --network ID [--label NAME] [--http-host H] [--http-port N] [--p2p-port N]
@@ -170,8 +172,9 @@ function progress(done: number, total: number | null): void {
 
 async function modelCmd(a: Args): Promise<void> {
   const sub = a._[1];
-  const m = await manifest();
   const dir = modelsDir(a);
+  if (a.has('scorer')) return scorerModelCmd(sub, dir, a);
+  const m = await manifest();
   if (sub === 'verify') {
     const v = await verifyModel(m, dir);
     if (!v.ok) fail(`${v.reason}: ${v.detail}`);
@@ -200,6 +203,41 @@ async function modelCmd(a: Args): Promise<void> {
     return;
   }
   fail('usage: ./mesh model download|import|verify');
+}
+
+/** The optional embedding model used to score summaries in the UI's reading test. */
+async function scorerModelCmd(sub: string | undefined, dir: string, a: Args): Promise<void> {
+  const sm = ScorerManifestSchema.parse(JSON.parse(await readFile(process.env.MESH_SCORER_MANIFEST ?? join(REPO_ROOT, 'models/scorer-manifest.json'), 'utf8')));
+  // verifyModel/importModel only use the artifact fields.
+  const asManifest = { artifact: sm.artifact } as unknown as Manifest;
+  if (sub === 'verify') {
+    const v = await verifyModel(asManifest, dir);
+    if (!v.ok) fail(`${v.reason}: ${v.detail}`);
+    out(`ok ${v.path}\n   sha256 ${v.sha256} matches the scorer manifest (${v.ms} ms)`);
+    return;
+  }
+  if (sub === 'download') {
+    const v = await verifyModel(asManifest, dir);
+    if (v.ok) {
+      out(`already present and verified: ${v.path}`);
+      return;
+    }
+    const dest = join(dir, sm.artifact.filename);
+    out(`downloading ${sm.artifact.url}\n  -> ${dest}`);
+    await downloadVerified(sm.artifact.url, dest, { sha256: sm.artifact.sha256, sizeBytes: sm.artifact.sizeBytes }, progress);
+    out(`\nverified sha256 ${sm.artifact.sha256}`);
+    out(`licence: ${sm.license}. ${sm.attribution}`);
+    out('Restart the node to enable meaning-match scoring in the UI.');
+    return;
+  }
+  if (sub === 'import') {
+    const src = a._[2] ?? fail('usage: ./mesh model import --scorer <file.gguf>');
+    const v = await importModel(asManifest, resolve(src), dir);
+    if (!v.ok) fail(`${v.reason}: ${v.detail}`);
+    out(`imported and verified: ${v.path}`);
+    return;
+  }
+  fail('usage: ./mesh model download|import|verify --scorer');
 }
 
 // ------------------------------------------------------------------ init / onboarding
@@ -488,7 +526,7 @@ async function clusterCmd(a: Args): Promise<void> {
 
 // ------------------------------------------------------------------ main
 async function main(): Promise<void> {
-  const a = parseArgs(process.argv.slice(2), ['detach', 'relay-server', 'no-relays', 'docker', 'fake', 'yes', 'no-stream']);
+  const a = parseArgs(process.argv.slice(2), ['detach', 'relay-server', 'no-relays', 'docker', 'fake', 'yes', 'no-stream', 'scorer']);
   const cmd = a._[0];
   switch (cmd) {
     case 'doctor':

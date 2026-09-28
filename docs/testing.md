@@ -6,9 +6,9 @@ Environment: Ubuntu 24.04 x86-64, Ryzen 7 3700X, 16 GB RAM, Docker 29.8.1 / Comp
 
 | Command | Runtime | Result |
 |---|---|---|
-| `pnpm test:unit` | none | **16/16 passed** |
-| `pnpm test:integration` | **FAKE deterministic adapter**, real separate OS processes, real libp2p | **40/40 passed**, two consecutive runs |
-| `pnpm test:real` | **real llama.cpp b11223 + verified model** | **8/8 passed** (the one "skipped" entry is the placeholder that only runs when the model is missing) |
+| `pnpm test:unit` | none | **18/18 passed** |
+| `pnpm test:integration` | **FAKE deterministic adapter**, real separate OS processes, real libp2p | **42/42 passed** |
+| `pnpm test:real` | **real llama.cpp b11223 + verified model** | **9/9 passed**, including meaning-match scoring with the real embedding model (the one "skipped" entry is the placeholder that only runs when the model is missing) |
 
 The fake adapter emits placeholder tokens (`t0 t1 …`) and supports fault directives such as `[[fake:crash_after=3]]`. Its guard rails:
 
@@ -49,7 +49,7 @@ It is never used by real deployments.
   - network dashboard with the peer ring and table
 
   Two UI bugs found this way were fixed: a crash on the first message, and a stuck "streaming" state.
-- **Tests page** (Chrome, real 3-node cluster): showing and hiding the text, choosing a node, a live timer, the result (1,408 tokens read by node1 in 3.81 s), run history, and the rendered `docs/benchmarks.md` view.
+- **Tests page** (Chrome, real 3-node cluster): showing and hiding the text, choosing a node, a live timer, the result (1,408 tokens read by node1 in 3.81 s), run history, and the rendered `docs/benchmarks.md` view. Also checked: summary scoring (meaning match 40–43%, word overlap 12–15% for real runs), showing and hiding each run's summary next to the ideal, and re-scoring an older run.
 
 ## Not validated (the environment could not provide it)
 

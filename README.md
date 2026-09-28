@@ -14,7 +14,7 @@ Each full node:
 - routes each request to itself or to a directly connected peer, based on locally measured load and latency
 - retries on up to two other workers if a worker fails **before** any text was produced; if one fails **after** text started, the answer is marked *interrupted* and never silently continued elsewhere
 - reaches peers behind NAT through circuit relays run by public nodes, and keeps working if either of two relays is lost
-- serves an OpenAI-compatible subset of the HTTP API and a UI with chat, a network dashboard, and a Tests page (a reading-speed test you can run against any node, plus the published benchmarks)
+- serves an OpenAI-compatible subset of the HTTP API and a UI with chat, a network dashboard, and a Tests page: a reading-speed test you can run against any node, with each summary scored against an ideal summary (optional `./mesh model download --scorer`), plus the published benchmarks
 
 What each failure does, and what it does not survive, is listed in [docs/architecture.md](docs/architecture.md#failures-tolerated). The security assumptions are in [docs/security.md](docs/security.md).
 

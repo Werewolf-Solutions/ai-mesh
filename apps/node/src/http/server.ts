@@ -31,6 +31,13 @@ import type { NodeConfig } from '../config.js';
 import { GatewayError, type AttemptRecord, type Gateway } from '../gateway/gateway.js';
 import type { Logger } from '../util/log.js';
 import type { TokenChecker } from '../secrets.js';
+import type { ScoreResult } from '../scoring/scorer.js';
+import { z } from 'zod';
+
+const ScoreRequest = z.strictObject({
+  reference: z.string().min(1).max(4000),
+  candidates: z.array(z.string().max(8000)).min(1).max(20),
+});
 import { REPO_ROOT } from '../version.js';
 
 export interface HttpDeps {
@@ -48,6 +55,8 @@ export interface HttpDeps {
   metrics: () => MetricsView;
   modelInfo: () => unknown;
   reloadAdmission: () => Promise<void>;
+  score: (reference: string, candidates: string[]) => Promise<ScoreResult>;
+  scorerStatus: () => { state: string; detail: string };
   uiDir?: string;
 }
 
@@ -335,6 +344,18 @@ export async function buildHttpServer(deps: HttpDeps): Promise<FastifyInstance> 
     await deps.reloadAdmission();
     return { ok: true };
   });
+  /**
+   * Compare texts with a reference (used by the UI's reading test). Runs on
+   * THIS node only: ROUGE-L always, embedding similarity when the scorer model
+   * is installed. Bounded input; the texts are not logged or stored.
+   */
+  app.post('/v1/mesh/score', { preHandler: requireRole('client') }, async (req, reply) => {
+    const parsed = ScoreRequest.safeParse(req.body);
+    if (!parsed.success) return sendError(reply, new MeshError('bad_request', `invalid score request: ${parsed.error.issues[0]?.message ?? ''}`));
+    return deps.score(parsed.data.reference, parsed.data.candidates);
+  });
+  app.get('/v1/mesh/scorer', { preHandler: requireRole('client') }, async () => deps.scorerStatus());
+
   /** Lets the UI discover whether its credential works and which role it has. */
   app.get('/v1/mesh/whoami', { preHandler: requireRole('client') }, async (req) => ({ role: roleOf(req), gatewayPeerId: deps.selfPeerId }));
 

@@ -1,0 +1,28 @@
+{
+  "manifestVersion": 1,
+  "id": "bge-small-en-v1.5-q8_0",
+  "displayName": "bge-small-en-v1.5 (GGUF Q8_0)",
+  "license": "mit",
+  "attribution": "bge-small-en-v1.5 by BAAI (Beijing Academy of Artificial Intelligence), MIT License. GGUF conversion published by ggml-org.",
+  "purpose": "Optional. Sentence embeddings used only to score how close a summary is to a reference in the UI's reading test. Never used to answer requests.",
+  "source": {
+    "repo": "BAAI/bge-small-en-v1.5",
+    "url": "https://huggingface.co/BAAI/bge-small-en-v1.5",
+    "revisionObserved": "5c38ec7c405ec4b44b94cc5a9bb96e735b38267a"
+  },
+  "artifact": {
+    "filename": "bge-small-en-v1.5-q8_0.gguf",
+    "repo": "ggml-org/bge-small-en-v1.5-Q8_0-GGUF",
+    "revision": "f2068edd9b54f2a369549ccc71f70ed273a2a801",
+    "url": "https://huggingface.co/ggml-org/bge-small-en-v1.5-Q8_0-GGUF/resolve/f2068edd9b54f2a369549ccc71f70ed273a2a801/bge-small-en-v1.5-q8_0.gguf",
+    "sizeBytes": 36685152,
+    "sha256": "f046db1dc724cf4f6f0a0c5917e922823b73eb1d27b8f9a9c2797f7866974804",
+    "sha256Provenance": "Git LFS object ID published by Hugging Face at the pinned revision; recomputed after download.",
+    "quantization": "Q8_0"
+  },
+  "pooling": "cls",
+  "calibration": {
+    "unrelated": "To bake the bread, mix two cups of flour with warm water, a spoon of yeast and a pinch of salt.",
+    "note": "Cosine similarity between bge-small embeddings is rarely near 0; the UI rescales between this unrelated sentence and the reference itself."
+  }
+}

@@ -66,6 +66,25 @@ and the headers `X-Mesh-Worker`, `X-Mesh-Gateway`, `X-Mesh-Route` and `X-Mesh-Ru
 - **Failure after output** sends `data: {"error": {"code": "interrupted", "message": …, "mesh": …}}` and ends **without** `[DONE]`.
 - A stream that ends without `[DONE]`, for whatever reason, must be treated as interrupted. `@werewolf-mesh/client` does exactly this.
 
+## Summary scoring (used by the UI's reading test)
+
+`POST /v1/mesh/score` (client token):
+
+```json
+{"reference": "ideal text (≤ 4000 chars)", "candidates": ["text", "…"]}
+```
+
+It takes 1–20 candidates of ≤ 8000 chars each and returns:
+
+```json
+{"rougeL": [{"f1": 0.12, "precision": 0.1, "recall": 0.15}],
+ "semantic": {"available": true, "model": "bge-small-en-v1.5-q8_0", "cosine": [0.6], "unrelatedBaseline": 0.3}}
+```
+
+- When the embedding model is not installed, `semantic` is `{"available": false, "reason": …}`.
+- Scoring runs on the node you call, never on peers, and the texts are neither logged nor stored.
+- `GET /v1/mesh/scorer` reports the scorer's state.
+
 ## Errors
 
 The body is `{"error": {"message", "type", "code", "retry_after_ms"?, "mesh"?}}`, with a `Retry-After` header where relevant.

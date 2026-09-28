@@ -228,3 +228,20 @@ describe('tokens', () => {
   });
 });
 
+
+describe('summary scoring', async () => {
+  const { rougeL } = await import('../../apps/node/src/scoring/rouge.js');
+  const { cosine } = await import('../../apps/node/src/scoring/scorer.js');
+  it('ROUGE-L is 1 for identical text, 0 for disjoint, and ignores case and punctuation', () => {
+    expect(rougeL('The pack, shares WORK.', 'the pack shares work').f1).toBe(1);
+    expect(rougeL('bread and flour', 'the pack shares work').f1).toBe(0);
+    const r = rougeL('the wolves share work', 'the pack shares the work');
+    expect(r.f1).toBeGreaterThan(0);
+    expect(r.f1).toBeLessThan(1);
+  });
+  it('cosine similarity', () => {
+    expect(cosine([1, 0], [1, 0])).toBeCloseTo(1);
+    expect(cosine([1, 0], [0, 1])).toBeCloseTo(0);
+    expect(cosine([1, 2], [-1, -2])).toBeCloseTo(-1);
+  });
+});

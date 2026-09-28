@@ -36,6 +36,7 @@ function childRss(pid: number): number {
 const REAL_PATCH = () => ({
   timeouts: { connectMs: 3000, firstTokenMs: 20000, streamIdleMs: 10000, defaultDeadlineMs: 60000 },
   runtime: { threads: 2, batchThreads: 2 },
+  scorer: { enabled: true },
 });
 
 describe.skipIf(!haveReal)('real llama.cpp model', () => {
@@ -157,6 +158,23 @@ describe.skipIf(!haveReal)('real llama.cpp model', () => {
     measurements.ttftAfterCancelMs = Math.round(first - t0);
     // 256 tokens at ~100+ tok/s would still be running for >1 s if cancel had not reached llama.cpp
     expect(first - t0).toBeLessThan(1000);
+  });
+
+  it('scores summaries by meaning with the pinned embedding model', async () => {
+    if (!existsSync(join(ROOT, 'models/bge-small-en-v1.5-q8_0.gguf'))) return; // optional model not installed
+    // node1 runs with the scorer enabled (see REAL_PATCH)
+    await waitFor(async () => (await (await fetch(`${n1.url}/v1/mesh/scorer`)).json()).state === 'ready', 30_000, 'scorer ready');
+    const ref = 'The pack survives the journey because many wolves share knowledge and work.';
+    const r = await (
+      await fetch(`${n1.url}/v1/mesh/score`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/json' },
+        body: JSON.stringify({ reference: ref, candidates: ['Wolves get through the trip by sharing what they know and the hard work.', 'The stock market fell after rates rose.'] }),
+      })
+    ).json();
+    expect(r.semantic.available).toBe(true);
+    expect(r.semantic.cosine[0]).toBeGreaterThan(r.semantic.cosine[1] + 0.3);
+    expect(r.semantic.cosine[1]).toBeLessThan(r.semantic.unrelatedBaseline + 0.15);
   });
 
   it('6. after stopping the bootstrap node, survivors still serve new requests', async () => {

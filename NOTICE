@@ -11,6 +11,9 @@ licences apply and are preserved):
   GGUF conversion by bartowski (bartowski/SmolLM2-135M-Instruct-GGUF), same licence.
   Model weights are downloaded by the operator; they are not distributed in this repository.
 
+- bge-small-en-v1.5 by BAAI, MIT License (optional summary-scoring model).
+  https://huggingface.co/BAAI/bge-small-en-v1.5 ; GGUF by ggml-org. Downloaded by the operator.
+
 - llama.cpp by the ggml-org authors, MIT License.
   https://github.com/ggml-org/llama.cpp
   Used as a separate process / container image (b11223); not vendored.

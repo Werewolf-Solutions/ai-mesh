@@ -40,7 +40,7 @@ export interface LlamaCppOptions {
   log: Logger;
 }
 
-async function freePort(): Promise<number> {
+export async function freePort(): Promise<number> {
   return new Promise((resolve, reject) => {
     const srv = createServer();
     srv.unref();

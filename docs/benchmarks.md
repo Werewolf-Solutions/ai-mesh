@@ -38,6 +38,24 @@ The prompt is a 1,178-word text (about 1,400 tokens) plus an instruction to summ
 | Remote peer via the mesh | 3 | 1,401–1,404 | 3.79–3.84 s | 365–371 tok/s |
 | Remote peer, run from the browser UI | 1 | 1,408 | 3.81 s | 370 tok/s |
 
+### Scoring the summaries
+
+Each summary is compared with an ideal one-sentence summary (editable in the UI) on the gateway:
+
+- **Meaning match:** cosine similarity of sentence embeddings from bge-small-en-v1.5 (Q8_0, MIT). It is shown on a scale from an unrelated sentence (0%) to the ideal summary itself (100%).
+- **Word overlap:** ROUGE-L F1, with no model.
+
+Calibration against the default ideal summary:
+
+| Candidate | Cosine | Meaning match | Word overlap |
+|---|---|---|---|
+| A faithful paraphrase written by hand | 0.89 | 85% | 35% |
+| A loosely related sentence ("wolves travel a long way every winter…") | 0.73 | 61% | 8% |
+| Real SmolLM2-135M summaries (4 runs) | 0.57–0.60 | 39–43% | 10–15% |
+| An unrelated sentence (stock market) | 0.26 | 0% | 8% |
+
+Labels: ≥ 70% "close to the ideal", ≥ 35% "partly matches", below that "far from the ideal". These are rough guides from this calibration, not grades. SmolLM2-135M's summaries land in "partly matches": they are about the right text but miss its point.
+
 Reading speed on a long prompt (≈ 370 tok/s) is a little lower than on a short one (≈ 400 tok/s): attention cost grows with context length. Routing to a peer adds no measurable reading time; the network cost appears only in the browser's "first word" time (a few ms on one host).
 
 ## Mesh

@@ -37,6 +37,9 @@ body {
   font-family: var(--font-sans);
   font-size: 16px;
   line-height: 1.5;
+  /* The app scrolls inside its panels; the page itself never scrolls. */
+  height: 100%;
+  overflow: hidden;
 }
 
 .num {

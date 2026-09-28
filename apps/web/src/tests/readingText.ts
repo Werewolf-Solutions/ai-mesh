@@ -25,5 +25,12 @@ The last stage of the route runs through a long valley of birch and aspen, where
 
 When the researchers put all of these observations together, a simple picture emerged. The Hollow Pine pack reaches its winter home every year not because one wolf knows the way, but because many wolves each know part of it, share the hardest work, pass warnings along quickly, agree in advance on places to meet, and accept that the journey must continue even when some members fall behind. It is not a perfect system. Wolves get lost, storms close the pass, and some winters are much harder than others. But it is a system that keeps working when individual parts fail, and that may be the most important thing any group on a long journey can have.`;
 
+/**
+ * Ideal one-sentence answer, written by hand to match the question. Users can
+ * replace it in the UI; each run records the reference it was scored against.
+ */
+export const READING_REFERENCE =
+  'The pack reaches its winter home because many wolves share the knowledge and the hard work, pass warnings quickly, agree on meeting places, and keep going even when some members fall behind, so the group survives when individuals fail.';
+
 /** The instruction sent with the text. Short answer → the timing is dominated by reading. */
 export const READING_INSTRUCTION = 'Read the following text. Then answer in one short sentence: what is the main lesson of the text?';

@@ -32,6 +32,14 @@ export interface MeshMeta {
   timings?: { queueMs: number; firstTokenMs: number; totalMs: number };
 }
 
+/** Response of POST /v1/mesh/score. */
+export interface ScoreResult {
+  rougeL: Array<{ f1: number; precision: number; recall: number }>;
+  semantic:
+    | { available: true; model: string; cosine: number[]; unrelatedBaseline: number }
+    | { available: false; reason: string };
+}
+
 export interface GatewayAttempt {
   gatewayUrl: string;
   error: { code: string; message: string; status?: number; retryAfterMs?: number };
@@ -95,6 +103,27 @@ export class MeshClient {
     const i = g.findIndex((x) => x.url === this.preferred);
     if (i > 0) g.unshift(...g.splice(i, 1));
     return g.slice(0, this.maxGateways);
+  }
+
+  /**
+   * Score candidate texts against a reference on the first reachable gateway
+   * (POST /v1/mesh/score). Returns null if no gateway could score.
+   */
+  async score(reference: string, candidates: string[], signal?: AbortSignal): Promise<(ScoreResult & { gatewayUrl: string }) | null> {
+    for (const gw of this.orderedGateways()) {
+      try {
+        const r = await this.fetchImpl(`${gw.url.replace(/\/$/, '')}/v1/mesh/score`, {
+          method: 'POST',
+          headers: { 'content-type': 'application/json', ...(gw.token ? { authorization: `Bearer ${gw.token}` } : {}) },
+          body: JSON.stringify({ reference, candidates }),
+          signal: signal ?? AbortSignal.timeout(30_000),
+        });
+        if (r.ok) return { ...((await r.json()) as ScoreResult), gatewayUrl: gw.url };
+      } catch {
+        /* try the next gateway */
+      }
+    }
+    return null;
   }
 
   async chat(o: ChatOptions): Promise<ChatResult> {

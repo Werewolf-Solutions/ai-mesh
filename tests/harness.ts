@@ -18,6 +18,8 @@ export const FAST_TIMINGS = {
   timeouts: { connectMs: 1500, firstTokenMs: 5000, streamIdleMs: 3000, defaultDeadlineMs: 30000, maxDeadlineMs: 60000 },
   worker: { queueTimeoutMs: 10000 },
   shutdown: { graceMs: 2000 },
+  // The embedding scorer is exercised in its own tests; keep fault-injection clusters light.
+  scorer: { enabled: false },
 };
 
 export interface TestNode extends ClusterNode {

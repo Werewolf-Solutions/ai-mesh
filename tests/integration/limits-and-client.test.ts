@@ -66,6 +66,24 @@ describe('limits, cancellation of queued jobs, and client fallback', () => {
     expect(after.memory.rssBytes - before.memory.rssBytes).toBeLessThan(80 * 1024 * 1024);
   });
 
+  it('scores summaries with ROUGE-L and reports when the meaning scorer is off', async () => {
+    const r = await fetch(`${n1.url}/v1/mesh/score`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${n1.clientToken}` },
+      body: JSON.stringify({ reference: 'the pack shares the work', candidates: ['the pack shares the work', 'bread needs flour'] }),
+    });
+    const j = await r.json();
+    expect(j.rougeL[0].f1).toBe(1);
+    expect(j.rougeL[1].f1).toBe(0);
+    expect(j.semantic).toMatchObject({ available: false });
+    const bad = await fetch(`${n1.url}/v1/mesh/score`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json', authorization: `Bearer ${n1.clientToken}` },
+      body: JSON.stringify({ reference: 'x', candidates: Array(21).fill('y') }),
+    });
+    expect(bad.status).toBe(400);
+  });
+
   it('client fails over to the next gateway before output, and remembers the good one', async () => {
     const client = new MeshClient([
       { url: 'http://127.0.0.1:1', token: 'x' }, // nothing listening
