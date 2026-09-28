@@ -143,6 +143,7 @@ What was run, and what could not be, is recorded in [docs/testing.md](docs/testi
 - [Security assumptions](docs/security.md)
 - [Models, effort and sharing compute](docs/models.md)
 - [Sharing a GPU](docs/gpu.md)
+- [Tools and agents: design (not built yet)](docs/agents-design.md)
 - [Pack memory](docs/pack-memory.md)
 - [Model provenance](docs/model.md)
 - [Benchmarks](docs/benchmarks.md) · [Testing](docs/testing.md) · [Roadmap](docs/roadmap.md) · [Progress checklist](PROGRESS.md)
