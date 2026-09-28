@@ -20,7 +20,7 @@ The initial sizing target per node is **2 vCPU / 2 GB RAM / 2 GB disk**. That is
 git clone <repo> werewolf-ai-mesh && cd werewolf-ai-mesh
 pnpm install --frozen-lockfile && pnpm build
 ./mesh model download            # once; SHA-256 verified; kept in ./models
-./mesh runtime install           # native mode only; Docker uses the pinned image
+./mesh runtime install           # native mode only; the Docker image already contains it
 docker build -f deploy/Dockerfile -t werewolf-mesh/node:0.2.0 .      # Docker mode (includes the pinned llama.cpp)
 docker pull ghcr.io/ggml-org/llama.cpp:server-b11223@sha256:8fdfad183be053cdb72d4b6a5930c3a2475730f932855ee9260193422c2564ed
 ```
@@ -78,7 +78,7 @@ Stopping is always non-destructive. Only `./mesh reset --data DIR --yes` deletes
 |---|---|---|
 | libp2p TCP | 4001 | **Inbound** needed only on public / bootstrap / relay nodes (and LAN peers). Home nodes need outbound only. |
 | HTTP API/UI | 8080 | Local by default. For remote users, expose it through an HTTPS reverse proxy (443 inbound), never plain HTTP. |
-| llama.cpp | none published | Loopback (native) or an internal Docker network. Never expose it. |
+| llama.cpp | none published | One process per hosted model on 127.0.0.1 (natively or inside the node container). Never expose it. |
 
 - **Listen** (`p2p.listen`) is where the socket binds.
 - **Announce** (`p2p.announce`, `--announce`) is what you tell others to dial.
@@ -188,7 +188,7 @@ docker compose -f deploy/generated/cluster-3/compose.yaml stop node1
 docker compose -f deploy/generated/cluster-3/compose.yaml start node1
 ```
 
-**No internet:** `docker compose -f <cluster>/compose.yaml -f deploy/compose.offline.yaml up -d` removes the default route. Inference between nodes keeps working.
+**No internet:** in v0.1 this was checked with `deploy/compose.offline.yaml` (a `mesh` network without a default route). v0.2 generated clusters use the same `mesh` network name, so the overlay still applies. Models must already be downloaded; installing new ones needs internet.
 
 ## 9. Manual two-machine test (*unverified; please run and record*)
 

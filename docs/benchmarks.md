@@ -68,6 +68,10 @@ Labels in the UI: ≥ 70% "close to the ideal", ≥ 35% "partly matches", below 
 
 Reading speed on a long prompt (≈ 370 tok/s) is a little lower than on a short one (≈ 400 tok/s): attention cost grows with context length. Routing to a peer adds no measurable reading time; the network cost appears only in the browser's "first word" time (a few ms on one host).
 
+## Catalog models
+
+Load time, RAM, speed and thinking checks for all 9 catalog models (4 threads, 8k context) are in [models.md](models.md#the-catalog). On this CPU, speed ranges from 176 tokens/s (SmolLM2 135M) to 6 tokens/s (Qwen3 8B).
+
 ## Mesh
 
 | Metric | Value | How |

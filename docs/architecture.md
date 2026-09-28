@@ -27,7 +27,7 @@ Adding a node does **not** add model quality, context length, pooled RAM/VRAM, o
      │                     ping · circuit relay v2 (client; server opt-in) │
      └──────────────────────────────────────────────────────────┬────────┘
                                                                  │ loopback / internal network only
-                                                        llama-server (separate process or container)
+                                          one llama-server process per hosted model (loopback only)
 ```
 
 | Path | Responsibility |
@@ -79,11 +79,11 @@ Docker-network names, `127.0.0.1`, and LAN addresses are **not** internet-routab
 
 Candidates are:
 
-- the gateway itself, if its model is ready and it is not draining
-- directly connected authorised peers that are *available* (fresh status, ready, same model fingerprint, under the failure threshold)
+- the gateway itself, if it serves the **requested model**, that model is ready, and it is not draining
+- directly connected authorised peers that are *available* (fresh status, under the failure threshold) and whose status record lists the requested model as ready in `modelLoad`
 
 ```
-score = (activeJobs + queueLength + requests this gateway already has outstanding there) / maxConcurrency
+score = (that model's active + queued + requests this gateway already has outstanding there) / maxConcurrency
         + (remote ? 0.5 + rttMs/1000 : 0)
 ```
 

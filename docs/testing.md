@@ -6,9 +6,9 @@ Environment: Ubuntu 24.04 x86-64, Ryzen 7 3700X, 16 GB RAM, Docker 29.8.1 / Comp
 
 | Command | Runtime | Result |
 |---|---|---|
-| `pnpm test:unit` | none | **22/22 passed** |
-| `pnpm test:integration` | **FAKE deterministic adapter**, real separate OS processes, real libp2p | **48/48 passed** |
-| `pnpm test:real` | **real llama.cpp b11223 + verified model** | **10/10 passed**, including meaning-match scoring and pack-memory retrieval with the real embedding model (the one "skipped" entry is the placeholder that only runs when the model is missing) |
+| `pnpm test:unit` | none | **24/24 passed** |
+| `pnpm test:integration` | **FAKE deterministic adapter**, real separate OS processes, real libp2p | **56/56 passed** |
+| `pnpm test:real` | **real llama.cpp b11223 + verified model** | **14/14 passed**, including meaning-match scoring, pack-memory retrieval, installing a catalog model through the admin API, effort on/off, routing by model across nodes, and the thinking budget stopping Qwen3 4B (the one "skipped" entry is the placeholder that only runs when the model is missing) |
 
 The fake adapter emits placeholder tokens (`t0 t1 …`) and supports fault directives such as `[[fake:crash_after=3]]`. Its guard rails:
 
@@ -51,6 +51,23 @@ It is never used by real deployments.
   Two UI bugs found this way were fixed: a crash on the first message, and a stuck "streaming" state.
 - **Tests page** (Chrome, real 3-node cluster): showing and hiding the text, choosing a node, a live timer, the result (1,408 tokens read by node1 in 3.81 s), run history, and the rendered `docs/benchmarks.md` view. Also checked: summary scoring (meaning match 40–43%, word overlap 12–15% for real runs), showing and hiding each run's summary next to the ideal, and re-scoring an older run.
 
+## v0.2 models and effort (executed)
+
+- All 9 catalog models were downloaded (SHA-256 verified) and run on llama.cpp b11223, with load time, RAM, speed and a thinking on/off check each (`docs/models.md`).
+- `tests/integration/models.test.ts` (fake runtime):
+  - catalog view
+  - routing only to nodes serving the model
+  - `no_workers` for unserved models
+  - thinking streamed separately, with the budget enforced (512 / 256 tokens)
+  - install and unhost through the admin API, persisted across restart
+- **Browser, real 2-node cluster:**
+  - picked Qwen3.5 0.8B from "Not running yet" → "Run on this computer" → loading progress → auto-selected
+  - Balanced: live thinking, "Thought for 17 s", answer 391
+  - Fast: answer 441, which is wrong
+  - Models page
+- **Real download through the node:** cancelled at 318 MB, resumed, byte-identical file, then served.
+- **Docker 2-node cluster:** node1 installed Qwen3.5 inside its container; node2's request with thinking was served by node1 (391).
+
 ## Not validated (the environment could not provide it)
 
 | Item | Why not | How to run it |
@@ -64,3 +81,4 @@ It is never used by real deployments.
 | Native offline test with network namespaces | Ubuntu blocks unprivileged user namespaces (`apparmor_restrict_unprivileged_userns=1`); host security settings were not changed | Docker `internal` network used instead |
 | Ten nodes each running the real model | Deliberately not run on one laptop | `./mesh cluster generate --nodes 10 && ./mesh cluster up …` on a host with ≥ 4 GB RAM |
 | GPU acceleration | Out of scope for the CPU baseline | — |
+| Qwen3 8B inside Docker | Needs `MESH_MEM` ≥ 10g; only run natively | `MESH_MEM=10g`, then install from the Models page |

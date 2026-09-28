@@ -14,7 +14,7 @@ v0.1 is for a **small group of operators who know and approve each other**. It i
   - The network ID is a label, not a password.
 - **Remote capabilities:** peers can only exchange status and submit bounded inference jobs for the exact model fingerprint. They cannot run commands, read or write files, install models, change settings, fetch URLs, or make a worker forward jobs.
 - **Runtime isolation:**
-  - llama.cpp listens on loopback with a random per-start API key (native), or on an internal Docker network with no published port and no internet route.
+  - Each hosted model's llama.cpp process listens on 127.0.0.1 with a random per-start API key, natively or inside the node container; no runtime port is ever published.
   - The web UI, tools, `/props` changes and slot saving are disabled.
   - Containers run as non-root with a read-only root filesystem, all capabilities dropped, `no-new-privileges`, CPU/memory limits, and no Docker socket.
 - **Secrets:**
@@ -22,7 +22,12 @@ v0.1 is for a **small group of operators who know and approve each other**. It i
   - Logs redact authorization headers, prompts and outputs by default.
   - Client and admin tokens are separate from peer membership.
 - **Input bounds:** frame, body, message, token-budget, queue, connection and hint limits are listed in [architecture.md](architecture.md#failure-policy). Malformed input is dropped without execution; this is covered by tests.
-- **Model integrity:** SHA-256 is checked against the pinned manifest before every load. The model is never downloaded from peers.
+- **Model integrity:**
+  - Only models in the vetted catalog can run.
+  - SHA-256 is checked against the catalog before every load.
+  - Models are downloaded only from the pinned URL, never from peers.
+  - Installing is operator-only (admin token or loopback): peers and ordinary clients cannot make a node download or run anything.
+  - In Docker the models folder is writable by the node container so operators can install from the UI; a corrupted or replaced file fails verification and is not loaded.
 - **Pack memory:**
   - Shared notes contain no author, node or exact time.
   - Personal data is scrubbed before sharing.

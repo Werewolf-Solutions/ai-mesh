@@ -8,6 +8,7 @@ The HTTP API is how browsers and clients reach a gateway. It is separate from th
 |---|---|
 | `GET /health/live`, `GET /health/ready` | Anonymous; minimal information |
 | `GET /v1/models`, `POST /v1/chat/completions`, `GET /v1/mesh/whoami` | Client token or admin token |
+| `GET /admin/models`, `POST /admin/models/:id/install\|cancel\|unhost`, `DELETE /admin/models/:id` | Admin token (this node's operator only) |
 | `GET /admin/status`, `/admin/peers`, `/admin/metrics`, `/admin/model`, `POST /admin/reload-admission` | Admin token |
 | `/` (UI files) | Anonymous; contains no secrets |
 
@@ -24,11 +25,12 @@ The HTTP API is how browsers and clients reach a gateway. It is separate from th
 
 - `messages` (roles `system`, `user`, `assistant`; text content only)
 - `stream`, `stream_options.include_usage`
-- `max_tokens` / `max_completion_tokens` (≤ 256; default 256)
+- `max_tokens` / `max_completion_tokens`: the **answer** length (thinking comes on top); at most the model's `maxOutputTokens` (2,048 for most catalog models, 512 for SmolLM2 135M); default depends on effort
+- `reasoning_effort`: `none`/`minimal` (answer directly), `low` (think up to 512 tokens, default), `medium` (1,536), `high` (4,096); budgets are clamped to the model's context. Models without a thinking mode only change the default answer length. See [models.md](models.md#effort).
 - `temperature`, `top_p`, `seed`, `stop` (≤ 4)
 - `presence_penalty`, `frequency_penalty`
 - `n` (must be 1)
-- `model` (optional; must be `smollm2-135m-instruct-q4_k_m` or the full fingerprint)
+- `model`: a catalog ID (see `GET /v1/models?all=1`) or a model fingerprint. Default: the first model running on the gateway, else one the pack serves.
 
 **Accepted and ignored:** `user`, `store`, `metadata`, `service_tier`.
 
@@ -36,7 +38,7 @@ The HTTP API is how browsers and clients reach a gateway. It is separate from th
 
 - `tools`, `tool_choice`, `functions`, `function_call`, `parallel_tool_calls`
 - `logprobs`, `top_logprobs`, `logit_bias`
-- `response_format`, `audio`, `modalities`, `prediction`, `reasoning_effort`, `web_search_options`
+- `response_format`, `audio`, `modalities`, `prediction`, `web_search_options`
 
 Image or other non-text content parts, and any unknown field, get `400 bad_request`. This is **not** full OpenAI API compatibility.
 
@@ -110,3 +112,12 @@ The body is `{"error": {"message", "type", "code", "retry_after_ms"?, "mesh"?}}`
   ```
 
   `canServe` is true when this gateway can route to at least one ready worker, itself or a peer.
+
+## Models
+
+- `GET /v1/models`: models some reachable node is serving now (usable by OpenAI clients). Each entry's `mesh` field holds name, thinking capability, context, download size, RAM, licence and `available: {nodes, local}`.
+- `GET /v1/models?all=1`: the whole vetted catalog. For the node's operator, each entry also has `local: {state, progress, error, fit}`, where state is `not_installed`, `downloading`, `verifying`, `starting`, `serving`, `installed` or `failed`.
+- `POST /admin/models/:id/install`: fit check, then resumable verified download, start and advertise, in the background. Poll `GET /admin/models` for progress.
+- `POST /admin/models/:id/cancel` stops a download (the partial file is kept for resuming). `POST /admin/models/:id/unhost` stops serving. `DELETE /admin/models/:id` deletes a file that is not served.
+
+Thinking arrives as `delta.reasoning_content` in streams, and as `message.reasoning_content` in non-streaming replies. `mesh.model` and `mesh.effort` report what was used.

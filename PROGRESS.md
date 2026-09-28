@@ -45,3 +45,12 @@ Status legend: [x] done and verified · [~] implemented, partially verified · [
 - [ ] HTTPS reverse proxy, systemd unit
 - [ ] ARM64 / macOS runtime binaries
 - [ ] Ten nodes each running the real model on one host (generation + fake-runtime 10-process mesh tested)
+
+## v0.2: choosing models and effort
+- [x] Vetted catalog of 9 Apache-2.0 models, pinned and tested on llama.cpp b11223
+- [x] Several models per node; per-model load in status; routing by model
+- [x] Effort (reasoning_effort) with enforced thinking budgets; thinking streamed separately
+- [x] Operator install: fit check, resumable verified download, start, advertise, persist (UI, CLI, API)
+- [x] UI: model picker, effort control, thinking display, Models page
+- [x] Docker image contains llama.cpp; one container per node
+- [ ] Qwen3 8B in Docker, ARM64/macOS, GPU builds (not tested)
