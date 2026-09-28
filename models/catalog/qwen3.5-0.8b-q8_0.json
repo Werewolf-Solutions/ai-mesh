@@ -1,0 +1,55 @@
+{
+  "manifestVersion": 1,
+  "id": "qwen3.5-0.8b-q8_0",
+  "displayName": "Qwen3.5 0.8B",
+  "family": "Qwen3.5",
+  "params": "0.8B",
+  "order": 20,
+  "description": "Small model that can think before answering. Much better with thinking on.",
+  "source": {
+    "repo": "Qwen/Qwen3.5-0.8B",
+    "url": "https://huggingface.co/Qwen/Qwen3.5-0.8B",
+    "revisionObserved": "2fc06364715b967f1860aea9cf38778875588b17",
+    "license": "apache-2.0",
+    "attribution": "Qwen3.5 by the Qwen team, Alibaba Cloud. Licensed under the Apache License 2.0."
+  },
+  "artifact": {
+    "filename": "Qwen3.5-0.8B-Q8_0.gguf",
+    "repo": "ggml-org/Qwen3.5-0.8B-GGUF",
+    "revision": "8fea620810c4afa23dd6443f999a48574c1611a3",
+    "url": "https://huggingface.co/ggml-org/Qwen3.5-0.8B-GGUF/resolve/8fea620810c4afa23dd6443f999a48574c1611a3/Qwen3.5-0.8B-Q8_0.gguf",
+    "sizeBytes": 833592096,
+    "sha256": "37ae482d336108d23516fa35e8e0c4126688d81018b87178a18d752a1357814f",
+    "quantization": "Q8_0",
+    "format": "GGUF",
+    "publishedBy": "ggml-org (llama.cpp maintainers)",
+    "sha256Provenance": "Git LFS object ID published by Hugging Face at the pinned revision; recomputed after download on 2026-09-28."
+  },
+  "chatTemplate": {
+    "format": "embedded",
+    "source": "tokenizer.chat_template in the GGUF, rendered by llama.cpp (jinja)"
+  },
+  "capabilities": {
+    "thinking": "toggle"
+  },
+  "serving": {
+    "contextTokens": 8192,
+    "maxOutputTokens": 2048
+  },
+  "resources": {
+    "ramMB": 1200,
+    "tested": true,
+    "measured": {
+      "on": "AMD Ryzen 7 3700X, 4 threads, llama.cpp b11223, 8k context, 2026-09-28",
+      "loadMs": 1449,
+      "rssMB": 1075,
+      "decodeTokPerS": 26,
+      "promptTokPerS": 138,
+      "check": {
+        "question": "What is 17*23?",
+        "withoutThinking": "491",
+        "withThinking": "391"
+      }
+    }
+  }
+}

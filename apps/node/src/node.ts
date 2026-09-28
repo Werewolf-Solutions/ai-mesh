@@ -1,12 +1,14 @@
 /**
- * MeshNode: one full node = inference worker + gateway + peer networking + HTTP API.
+ * MeshNode: one full node = inference workers (one per hosted model) + gateway
+ * + peer networking + pack memory + HTTP API.
  *
- * Startup order: HTTP (liveness) -> model verification -> runtime load (async)
- * -> libp2p + peer manager. Readiness reflects the model, not the process.
+ * Startup order: HTTP (liveness) -> libp2p + peer manager -> hosted models are
+ * verified and loaded one by one (async). Readiness reflects loaded models, not
+ * the process.
  *
  * Shutdown (SIGTERM/SIGINT): stop admitting, advertise `draining`, wait up to
  * `shutdown.graceMs` for active jobs, cancel the rest, persist the peer cache,
- * stop libp2p and the runtime. Identity is never regenerated.
+ * stop libp2p and the runtimes. Identity is never regenerated.
  */
 import type { Libp2p } from '@libp2p/interface';
 import type { MetricsView, NodeStatusView, ReadyBody, StatusRecord } from '@werewolf-mesh/protocol';
@@ -18,31 +20,23 @@ import { Gateway } from './gateway/gateway.js';
 import { buildHttpServer } from './http/server.js';
 import { loadIdentity, type Identity } from './identity.js';
 import { Metrics } from './metrics.js';
-import { loadManifest, modelFingerprint, modelPath, verifyModel, type Manifest } from './model.js';
+import { loadRuntimePin } from './model.js';
+import { ModelManager } from './models/manager.js';
 import { buildGater, createHost, installRelayRecovery } from './p2p/host.js';
 import { InferClient, InferHandler } from './p2p/infer.js';
 import { PeerManager } from './p2p/peers.js';
-import type { InferenceAdapter } from './runtime/adapter.js';
-import { FakeAdapter, FAKE_FINGERPRINT } from './runtime/fake.js';
-import { LlamaCppAdapter } from './runtime/llamacpp.js';
-import { Scorer } from './scoring/scorer.js';
 import { PackMemory } from './pack/memory.js';
+import { Scorer } from './scoring/scorer.js';
 import { loadSecrets, TokenChecker } from './secrets.js';
 import { createLogger, type Logger } from './util/log.js';
 import { SOFTWARE_VERSION } from './version.js';
-import { WorkerPool } from './worker/pool.js';
-import { WorkerService } from './worker/service.js';
 
 export class MeshNode {
   cfg!: NodeConfig;
   log!: Logger;
   identity!: Identity;
-  manifest!: Manifest;
-  fingerprint!: string;
   admission!: Admission;
-  adapter!: InferenceAdapter;
-  pool!: WorkerPool;
-  worker!: WorkerService;
+  models!: ModelManager;
   libp2p!: Libp2p;
   peers!: PeerManager;
   gateway!: Gateway;
@@ -51,9 +45,8 @@ export class MeshNode {
   pack!: PackMemory;
   readonly metrics = new Metrics();
   private startedAt = Date.now();
-  private state: 'starting' | 'ready' | 'not_ready' | 'draining' = 'starting';
-  private modelState: ReadyBody['model'] = 'unverified';
-  private modelVerified = false;
+  private draining = false;
+  private started = false;
   private stopping: Promise<void> | undefined;
 
   constructor(readonly dataDir: string) {}
@@ -62,43 +55,20 @@ export class MeshNode {
     this.cfg = await loadConfig(this.dataDir);
     this.log = createLogger({ nodeLabel: this.cfg.label });
     this.identity = await loadIdentity(this.dataDir);
-    this.manifest = await loadManifest(this.cfg.model.manifest);
     const fake = this.cfg.runtime.kind === 'fake';
-    this.fingerprint = fake ? FAKE_FINGERPRINT : modelFingerprint(this.manifest);
     if (fake) this.log.warn('USING THE FAKE TEST RUNTIME: responses are placeholder tokens, not model output');
-    const contextTokens = Math.min(this.cfg.runtime.contextTokens, LIMITS.contextTokens);
+
+    this.models = new ModelManager({
+      cfg: this.cfg,
+      dataDir: this.dataDir,
+      runtimePin: await loadRuntimePin(this.cfg.model.runtimePin),
+      metrics: this.metrics,
+      log: this.log.child({ component: 'models' }),
+    });
+    await this.models.init();
 
     this.admission = new Admission(this.dataDir, this.cfg.networkId, this.identity.peerId, (a, r) => this.peers?.onAdmissionChange(a, r));
     await this.admission.load();
-
-    this.adapter = fake
-      ? new FakeAdapter(this.cfg.runtime.fakeTokenDelayMs)
-      : new LlamaCppAdapter({
-          mode: this.cfg.runtime.mode,
-          binary: this.cfg.runtime.binary,
-          url: this.cfg.runtime.url,
-          apiKeyFile: this.cfg.runtime.apiKeyFile,
-          modelPath: modelPath(this.manifest, this.cfg.model.dir),
-          expectedBuildInfo: this.manifest.runtime.buildInfo,
-          threads: this.cfg.runtime.threads,
-          batchThreads: this.cfg.runtime.batchThreads,
-          contextTokens,
-          parallel: this.cfg.worker.maxConcurrency,
-          maxOutputTokens: LIMITS.maxOutputTokens,
-          mlock: this.cfg.runtime.mlock,
-          mmap: this.cfg.runtime.mmap,
-          startupTimeoutMs: this.cfg.runtime.startupTimeoutMs,
-          dataDir: this.dataDir,
-          log: this.log.child({ component: 'runtime' }),
-        });
-    this.pool = new WorkerPool(this.cfg.worker.maxConcurrency, this.cfg.worker.maxQueue);
-    this.worker = new WorkerService(
-      this.adapter,
-      this.pool,
-      { contextTokens, queueTimeoutMs: this.cfg.worker.queueTimeoutMs, firstTokenMs: this.cfg.timeouts.firstTokenMs, streamIdleMs: this.cfg.timeouts.streamIdleMs },
-      this.metrics,
-      { ttlMs: this.cfg.worker.dedupTtlMs, maxEntries: this.cfg.worker.dedupMaxEntries },
-    );
 
     // ---- libp2p
     const gater = buildGater(
@@ -122,15 +92,15 @@ export class MeshNode {
       cfg: this.cfg,
       selfPeerId: this.identity.peerId,
       selfStatus: () => this.statusRecord(),
-      modelFingerprint: this.fingerprint,
+      modelName: (fp) => this.models.resolve(fp)?.id ?? null,
       dataDir: this.dataDir,
       log: this.log.child({ component: 'peers' }),
       metrics: this.metrics,
     });
-    const client = new InferClient({ libp2p: this.libp2p, selfPeerId: this.identity.peerId, fingerprint: this.fingerprint, cfg: this.cfg, metrics: this.metrics });
+    const client = new InferClient({ libp2p: this.libp2p, selfPeerId: this.identity.peerId, cfg: this.cfg, metrics: this.metrics });
     this.gateway = new Gateway({
       selfPeerId: this.identity.peerId,
-      worker: this.worker,
+      models: this.models,
       peers: this.peers,
       client,
       maxInFlight: this.cfg.http.maxInFlight,
@@ -162,7 +132,7 @@ export class MeshNode {
       log: this.log.child({ component: 'pack' }),
     });
 
-    // ---- HTTP first, so liveness works while the model loads.
+    // ---- HTTP first, so liveness works while models load.
     const secrets = await loadSecrets(this.dataDir);
     this.http = await buildHttpServer({
       cfg: this.cfg,
@@ -170,9 +140,9 @@ export class MeshNode {
       tokens: new TokenChecker(secrets),
       gateway: this.gateway,
       selfPeerId: this.identity.peerId,
-      modelId: fake ? 'fake-test-model' : this.manifest.id,
-      fingerprint: this.fingerprint,
-      runtimeKind: this.adapter.kind,
+      runtimeKind: fake ? 'fake' : 'llama.cpp',
+      models: this.models,
+      servedBy: (fp) => this.peers.countServing(fp),
       ready: () => this.readyBody(),
       status: () => this.statusView(),
       peers: () => this.peers.view(),
@@ -189,8 +159,7 @@ export class MeshNode {
     await this.libp2p.start();
     await new InferHandler({
       admission: this.admission,
-      worker: this.worker,
-      fingerprint: this.fingerprint,
+      models: this.models,
       selfPeerId: this.identity.peerId,
       cfg: this.cfg,
       metrics: this.metrics,
@@ -199,6 +168,7 @@ export class MeshNode {
     await this.peers.start();
     if (this.cfg.pack.enabled) await this.pack.start();
     this.admission.watch(this.cfg.discovery.admissionReloadMs, (err) => this.log.error({ err: (err as Error).message }, 'admission reload failed; keeping previous list'));
+    this.started = true;
 
     this.log.info(
       {
@@ -207,67 +177,66 @@ export class MeshNode {
         http: `http://${this.cfg.http.host}:${this.cfg.http.port}`,
         listen: this.libp2p.getMultiaddrs().map((m) => m.toString()),
         authorizedPeers: this.admission.list().length,
+        hosting: [...this.models.catalog.keys()].filter((id) => this.models.hosts.has(id) || this.cfg.model.host.includes(id)),
       },
       'node started',
     );
 
-    // ---- model (after networking, so the node can gateway to peers while loading)
-    void this.loadModel(fake)
+    // ---- models (after networking, so the node can gateway to peers while loading)
+    void this.models
+      .startHosted()
+      .then(() => this.log.info({ startupMs: Date.now() - this.startedAt, ready: this.models.readyHosts().map((h) => h.entry.id) }, 'hosted models loaded'))
       .then(() => this.scorer.start())
       .then(() => this.pack.reindex());
   }
 
-  private async loadModel(fake: boolean): Promise<void> {
-    try {
-      if (!fake) {
-        this.modelState = 'unverified';
-        const t0 = Date.now();
-        const v = await verifyModel(this.manifest, this.cfg.model.dir);
-        if (!v.ok) {
-          this.modelState = v.reason === 'absent' ? 'absent' : 'failed';
-          this.state = 'not_ready';
-          this.log.error({ reason: v.reason, detail: v.detail }, 'model verification failed; NOT loading. Run: ./mesh model download (or import)');
-          return;
-        }
-        this.modelVerified = true;
-        this.log.info({ sha256: v.sha256, ms: v.ms }, 'model verified against manifest');
-        this.metrics.sample('model_verify_ms', Date.now() - t0);
-      } else {
-        this.modelVerified = true;
-      }
-      this.modelState = 'loading';
-      const t1 = Date.now();
-      await this.adapter.start();
-      const loadMs = Date.now() - t1;
-      this.metrics.sample('runtime_start_ms', loadMs);
-      this.modelState = 'ready';
-      if (this.state === 'starting' || this.state === 'not_ready') this.state = 'ready';
-      this.log.info({ ms: loadMs, startupMs: Date.now() - this.startedAt, runtime: this.adapter.kind }, 'local model ready');
-    } catch (err) {
-      this.modelState = 'failed';
-      this.state = 'not_ready';
-      this.log.error({ err: (err as Error).message }, 'runtime failed to start');
+  private totals() {
+    let active = 0;
+    let queued = 0;
+    let maxConcurrency = 0;
+    let maxQueue = 0;
+    for (const h of this.models.hosts.values()) {
+      active += h.pool.activeCount;
+      queued += h.pool.queuedCount;
+      maxConcurrency += h.pool.maxConcurrency;
+      maxQueue += h.pool.maxQueue;
     }
+    return { active, queued, maxConcurrency, maxQueue };
   }
 
-  private localReady(): boolean {
-    return this.adapter.status().ready && this.state !== 'draining';
+  private anyReady(): boolean {
+    return !this.draining && this.models.readyHosts().length > 0;
+  }
+
+  private nodeState(): StatusRecord['state'] {
+    if (this.draining) return 'draining';
+    if (this.anyReady()) return 'ready';
+    return [...this.models.hosts.values()].some((h) => h.state === 'verifying' || h.state === 'starting') || !this.started ? 'starting' : 'not_ready';
   }
 
   statusRecord(): StatusRecord {
-    const ready = this.localReady();
+    const t = this.totals();
+    const hosts = [...this.models.hosts.values()];
     return {
       peerId: this.identity.peerId,
       networkId: this.cfg.networkId,
       protocolVersion: PROTOCOL_VERSION,
       softwareVersion: SOFTWARE_VERSION,
-      state: this.state === 'ready' && !ready ? 'not_ready' : this.state,
-      inferenceReady: ready,
-      models: this.modelVerified ? [this.fingerprint] : [],
-      activeJobs: this.pool.activeCount,
-      queueLength: this.pool.queuedCount,
-      maxConcurrency: this.pool.maxConcurrency,
-      maxQueue: this.pool.maxQueue,
+      state: this.nodeState(),
+      inferenceReady: this.anyReady(),
+      models: this.draining ? [] : this.models.readyHosts().map((h) => h.fingerprint).slice(0, LIMITS.maxModelFingerprints),
+      modelLoad: hosts.slice(0, LIMITS.maxModelFingerprints).map((h) => ({
+        model: h.fingerprint,
+        ready: !this.draining && h.state === 'serving' && h.adapter.status().ready && !h.pool.draining,
+        active: h.pool.activeCount,
+        queued: h.pool.queuedCount,
+        maxConcurrency: h.pool.maxConcurrency,
+        maxQueue: h.pool.maxQueue,
+      })),
+      activeJobs: t.active,
+      queueLength: t.queued,
+      maxConcurrency: t.maxConcurrency,
+      maxQueue: t.maxQueue,
       addrs: this.libp2p
         .getMultiaddrs()
         .map((m) => m.toString())
@@ -278,32 +247,44 @@ export class MeshNode {
   }
 
   readyBody(): ReadyBody {
-    const rt = this.adapter.status();
-    const model: ReadyBody['model'] = rt.ready ? 'ready' : rt.state === 'failed' ? 'failed' : this.modelState;
+    const hosts = [...this.models.hosts.values()];
+    const model: ReadyBody['model'] = this.anyReady()
+      ? 'ready'
+      : hosts.some((h) => h.state === 'verifying' || h.state === 'starting')
+        ? 'loading'
+        : hosts.some((h) => h.state === 'failed')
+          ? 'failed'
+          : 'absent';
     return {
-      ready: rt.ready && this.state !== 'draining',
+      ready: this.anyReady(),
       model,
-      serving: this.state === 'draining' ? 'draining' : this.state === 'starting' ? 'starting' : 'accepting',
-      canServe: this.state !== 'draining' && this.gateway.canServe(),
+      serving: this.draining ? 'draining' : this.started ? 'accepting' : 'starting',
+      canServe: !this.draining && this.gateway.canServe(),
     };
   }
 
   statusView(): NodeStatusView {
-    const rt = this.adapter.status();
-    const all = this.libp2p.getMultiaddrs().map((m) => m.toString());
+    const hosts = [...this.models.hosts.values()];
+    const first = this.models.readyHosts()[0] ?? hosts[0];
+    const t = this.totals();
     return {
       peerId: this.identity.peerId,
       networkId: this.cfg.networkId,
       softwareVersion: SOFTWARE_VERSION,
       protocolVersion: PROTOCOL_VERSION,
       uptimeMs: Date.now() - this.startedAt,
-      state: this.state,
-      runtime: { kind: this.adapter.kind, ready: rt.ready, detail: rt.detail },
-      model: { id: this.adapter.kind === 'fake' ? 'fake-test-model' : this.manifest.id, fingerprint: this.fingerprint, verified: this.modelVerified },
-      worker: { active: this.pool.activeCount, queued: this.pool.queuedCount, maxConcurrency: this.pool.maxConcurrency, maxQueue: this.pool.maxQueue },
+      state: this.nodeState(),
+      runtime: {
+        kind: this.models.fake ? 'fake' : 'llama.cpp',
+        ready: this.anyReady(),
+        detail: this.models.readyHosts().map((h) => h.adapter.status().detail).join('; ') || first?.detail || 'no model hosted',
+      },
+      model: { id: first?.entry.id ?? '', fingerprint: first?.fingerprint ?? '', verified: !!first && first.state !== 'failed' && first.state !== 'verifying' },
+      models: hosts.map((h) => ({ id: h.entry.id, fingerprint: h.fingerprint, state: h.state, detail: h.detail, active: h.pool.activeCount, queued: h.pool.queuedCount })),
+      worker: { active: t.active, queued: t.queued, maxConcurrency: t.maxConcurrency, maxQueue: t.maxQueue },
       gateway: { inFlight: this.gateway.inFlight, maxInFlight: this.cfg.http.maxInFlight },
       listenAddrs: this.cfg.p2p.listen,
-      advertisedAddrs: all,
+      advertisedAddrs: this.libp2p.getMultiaddrs().map((m) => m.toString()),
       relayServer: this.cfg.p2p.relayServer,
       observation: 'local-partial',
     };
@@ -318,23 +299,22 @@ export class MeshNode {
       memory: { rssBytes: mem.rss, heapUsedBytes: mem.heapUsed },
       connections: this.libp2p.getConnections().length,
       trackedPeers: this.peers.trackedCount,
-      dedupEntries: this.worker.dedup.size,
+      dedupEntries: [...this.models.hosts.values()].reduce((n, h) => n + h.worker.dedup.size, 0),
     };
   }
 
   modelInfo(): unknown {
-    const m = this.manifest;
     return {
-      id: m.id,
-      displayName: m.displayName,
-      fingerprint: this.fingerprint,
-      runtime: this.adapter.kind,
-      verified: this.modelVerified,
-      license: m.source.license,
-      attribution: m.source.attribution,
-      artifact: { filename: m.artifact.filename, sha256: m.artifact.sha256, quantization: m.artifact.quantization, repo: m.artifact.repo, revision: m.artifact.revision },
-      runtimeBuild: m.runtime.buildInfo,
-      execution: 'Replicated inference: every full node holds a complete copy of this model. Adding nodes adds capacity and availability, not model size or pooled memory.',
+      hosted: [...this.models.hosts.values()].map((h) => ({
+        id: h.entry.id,
+        displayName: h.entry.displayName,
+        fingerprint: h.fingerprint,
+        state: h.state,
+        license: h.entry.source.license,
+        attribution: h.entry.source.attribution,
+        artifact: { filename: h.entry.artifact.filename, sha256: h.entry.artifact.sha256, quantization: h.entry.artifact.quantization },
+      })),
+      execution: 'Replicated inference: every node serving a model holds a complete copy of it. Adding nodes adds capacity and availability, not model size or pooled memory.',
     };
   }
 
@@ -342,14 +322,13 @@ export class MeshNode {
   stop(reason = 'shutdown'): Promise<void> {
     this.stopping ??= (async () => {
       this.log?.info({ reason }, 'draining: no longer admitting jobs');
-      this.state = 'draining';
-      if (this.pool && this.gateway && this.cfg) {
-        this.pool.draining = true;
+      this.draining = true;
+      if (this.models && this.gateway && this.cfg) {
+        for (const h of this.models.hosts.values()) h.pool.draining = true;
+        const busy = () => this.totals().active > 0 || this.totals().queued > 0 || this.gateway.inFlight > 0;
         const graceEnd = Date.now() + this.cfg.shutdown.graceMs;
-        while (Date.now() < graceEnd && (this.pool.activeCount > 0 || this.pool.queuedCount > 0 || this.gateway.inFlight > 0)) {
-          await new Promise((r) => setTimeout(r, 100));
-        }
-        if (this.pool.activeCount > 0 || this.gateway.inFlight > 0) {
+        while (Date.now() < graceEnd && busy()) await new Promise((r) => setTimeout(r, 100));
+        if (busy()) {
           this.log.warn('grace period over; cancelling remaining work');
           this.gateway.abortAll(new MeshError('draining', 'node shut down before the job finished'));
           await new Promise((r) => setTimeout(r, 200));
@@ -360,7 +339,7 @@ export class MeshNode {
       await this.peers?.stop().catch(() => undefined);
       await this.http?.close().catch(() => undefined);
       await Promise.resolve(this.libp2p?.stop()).catch(() => undefined);
-      await this.adapter?.stop().catch(() => undefined);
+      await this.models?.stopAll().catch(() => undefined);
       await this.scorer?.stop().catch(() => undefined);
       this.log?.info('stopped');
     })();

@@ -1,0 +1,29 @@
+{
+  "manifestVersion": 1,
+  "engine": "llama.cpp",
+  "release": "b11223",
+  "commit": "4da6337767f973e2b4d0797e5b323d77d8565e4a",
+  "buildInfo": "b11223-4da633776",
+  "image": "ghcr.io/ggml-org/llama.cpp:server-b11223@sha256:8fdfad183be053cdb72d4b6a5930c3a2475730f932855ee9260193422c2564ed",
+  "binaries": {
+    "linux-x64": {
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11223/llama-b11223-bin-ubuntu-x64.tar.gz",
+      "sha256": "9ce07ebd35ccdbae598ef34d21607564c4a21956cf075409f82e4f4fe871ea5e",
+      "dir": "llama-b11223",
+      "tested": true
+    },
+    "linux-arm64": {
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11223/llama-b11223-bin-ubuntu-arm64.tar.gz",
+      "sha256": "e4280e5c71369a04bef5a171e50ab77fd923f6c86318106b19942397c4ded75f",
+      "dir": "llama-b11223",
+      "tested": false
+    },
+    "darwin-arm64": {
+      "url": "https://github.com/ggml-org/llama.cpp/releases/download/b11223/llama-b11223-bin-macos-arm64.tar.gz",
+      "sha256": "5bacea12237283699a196194b7f62a0e613438bd5feed694359ed6050492bb3e",
+      "dir": "llama-b11223",
+      "tested": false
+    }
+  },
+  "binarySha256Provenance": "GitHub release asset digests for tag b11223; linux-x64 independently recomputed after download on 2026-09-28."
+}

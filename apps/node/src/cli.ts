@@ -3,7 +3,6 @@
  * `./mesh` — operator CLI for Werewolf AI Mesh. Run `./mesh help`.
  */
 import { spawn, spawnSync } from 'node:child_process';
-import { randomBytes } from 'node:crypto';
 import { closeSync, openSync } from 'node:fs';
 import { mkdir, readFile, rm, statfs, unlink, writeFile } from 'node:fs/promises';
 import { cpus, freemem, totalmem } from 'node:os';
@@ -14,7 +13,7 @@ import { readAuthorized } from './admission.js';
 import { parseArgs, type Args } from './cli/args.js';
 import { generateCluster } from './cluster.js';
 import { FILES, loadConfig, NodeConfigSchema, resolveDataDir, type NodeConfigInput } from './config.js';
-import { downloadVerified, importModel, loadManifest, platformKey, sha256File, verifyModel, type Manifest } from './model.js';
+import { DEFAULT_MODEL_ID, downloadVerified, importModel, loadCatalog, loadRuntimePin, platformKey, sha256File, verifyModel, type Manifest, type RuntimePin } from './model.js';
 import { approveFromJoinFile, approvePeer, initNode, joinInfo, revokePeer } from './onboarding.js';
 import { ScorerManifestSchema } from './scoring/scorer.js';
 import { loadSecrets } from './secrets.js';
@@ -30,7 +29,12 @@ Setup
   runtime install                       Download the pinned llama.cpp build for this platform (SHA-256 verified)
   model download [--dir DIR]            Download the pinned GGUF once (SHA-256 verified)
   model import <file.gguf> [--dir DIR]  Import an existing local GGUF (no network), verify, copy into DIR
-  model verify [--dir DIR]              Re-hash the model file against models/manifest.json
+  model verify [--dir DIR]              Re-hash the model file against its catalog manifest
+                                        (model commands take --model ID; default: the small default model)
+  models [list]                         The model catalog: size, RAM, thinking, installed/served here
+  models install ID [--data DIR]        Download (verified) and host a catalog model on this node
+  models unhost ID [--data DIR]         Stop serving a model on this node (keeps the file)
+  models remove ID                      Delete a model file that is not being served
   model download|import|verify --scorer Same, for the optional embedding model that scores summaries in the UI
 
 Node
@@ -50,7 +54,7 @@ Node
   reset --data DIR --yes                DELETE a node's identity, tokens and state (explicit, destructive)
 
 Local clusters
-  cluster generate --nodes N [--mode docker|native] [--out DIR] [--network ID] [--fake] [--threads N]
+  cluster generate --nodes N [--mode docker|native] [--out DIR] [--network ID] [--models ID,ID] [--fake] [--threads N]
   cluster up|down|ps|logs --dir DIR     Docker Compose wrapper for a generated docker cluster
   cluster start|stop --dir DIR          Start/stop a generated NATIVE cluster (background processes)
   demo failover --dir DIR               Scripted failover/interruption/bootstrap-loss demonstration
@@ -65,8 +69,17 @@ process.stdout.on('error', (e: NodeJS.ErrnoException) => {
 });
 const out = (s = '') => process.stdout.write(s + '\n');
 
-async function manifest(): Promise<Manifest> {
-  return loadManifest(process.env.MESH_MODEL_MANIFEST ?? join(REPO_ROOT, 'models/manifest.json'));
+const CATALOG_DIR = () => process.env.MESH_MODEL_CATALOG ?? join(REPO_ROOT, 'models/catalog');
+
+/** A catalog entry by ID (default: the small default model). */
+async function manifest(id: string = DEFAULT_MODEL_ID): Promise<Manifest> {
+  const all = await loadCatalog(CATALOG_DIR());
+  const m = all.find((e) => e.id === id);
+  if (!m) fail(`"${id}" is not in the catalog. Available: ${all.map((e) => e.id).join(', ')}`);
+  return m;
+}
+async function runtimePin(): Promise<RuntimePin> {
+  return loadRuntimePin(join(REPO_ROOT, 'models/runtime.json'));
 }
 function modelsDir(a: Args): string {
   return resolve(a.get('dir') ?? process.env.MESH_MODEL_DIR ?? join(REPO_ROOT, 'models'));
@@ -101,20 +114,29 @@ async function doctor(a: Args): Promise<void> {
   line(docker.status === 0 ? true : 'warn', 'Docker engine', docker.status === 0 ? docker.stdout.trim() : 'not available (native mode still works)');
   const compose = spawnSync('docker', ['compose', 'version', '--short'], { encoding: 'utf8' });
   line(compose.status === 0 ? true : 'warn', 'Docker Compose', compose.status === 0 ? compose.stdout.trim() : 'not available');
-  const m = await manifest();
-  const v = await verifyModel(m, modelsDir(a));
-  line(v.ok, 'model', v.ok ? `${m.artifact.filename} sha256 verified (${v.ms} ms)` : `${v.detail} — run ./mesh model download`);
-  const bin = join(REPO_ROOT, '.cache/runtime', m.runtime.binaries[plat]?.dir ?? 'x', 'llama-server');
+  const rt = await runtimePin();
+  const hostedIds = await (async () => {
+    const st = (await readJsonIfExists(join(dataDir(a), 'models-state.json'))) as { hosted?: string[] } | undefined;
+    if (st?.hosted) return st.hosted;
+    const cfg = await loadConfig(dataDir(a)).catch(() => null);
+    return cfg?.model.host ?? [DEFAULT_MODEL_ID];
+  })();
+  for (const id of hostedIds) {
+    const m = await manifest(id);
+    const v = await verifyModel(m, modelsDir(a));
+    line(v.ok, `model ${id}`, v.ok ? `${m.artifact.filename} sha256 verified (${v.ms} ms)` : `${v.detail} — run ./mesh model download --model ${id}`);
+  }
+  const bin = join(REPO_ROOT, '.cache/runtime', rt.binaries[plat]?.dir ?? 'x', 'llama-server');
   if (await exists(bin)) {
     const r = spawnSync(bin, ['--version'], { encoding: 'utf8' });
     const txt = `${r.stdout}${r.stderr}`;
-    const want = m.runtime.release.replace('b', '');
+    const want = rt.release.replace('b', '');
     line(txt.includes(`build ${want}`), 'llama.cpp runtime (native)', txt.split('\n').find((l) => l.startsWith('version')) ?? 'unknown');
   } else {
     line('warn', 'llama.cpp runtime (native)', 'not installed — run ./mesh runtime install (not needed for Docker)');
   }
-  const img = spawnSync('docker', ['image', 'inspect', m.runtime.image, '--format', 'present'], { encoding: 'utf8' });
-  if (docker.status === 0) line(img.status === 0 ? true : 'warn', 'llama.cpp runtime image', img.status === 0 ? m.runtime.image : `not pulled: docker pull ${m.runtime.image}`);
+  const img = spawnSync('docker', ['image', 'inspect', `werewolf-mesh/node:${SOFTWARE_VERSION}`, '--format', 'present'], { encoding: 'utf8' });
+  if (docker.status === 0) line(img.status === 0 ? true : 'warn', 'node image', img.status === 0 ? `werewolf-mesh/node:${SOFTWARE_VERSION}` : 'not built: docker build -f deploy/Dockerfile -t werewolf-mesh/node:' + SOFTWARE_VERSION + ' .');
   const dd = dataDir(a);
   if (await exists(join(dd, FILES.config))) {
     for (const f of [FILES.identity, FILES.secrets]) {
@@ -146,10 +168,10 @@ function portFree(port: number): Promise<boolean> {
 
 // ------------------------------------------------------------------ runtime / model
 async function runtimeInstall(): Promise<void> {
-  const m = await manifest();
+  const rt = await runtimePin();
   const key = platformKey();
-  const b = m.runtime.binaries[key];
-  if (!b) fail(`no pinned llama.cpp binary for ${key}; use Docker or build llama.cpp ${m.runtime.release} yourself`);
+  const b = rt.binaries[key];
+  if (!b) fail(`no pinned llama.cpp binary for ${key}; use Docker or build llama.cpp ${rt.release} yourself`);
   if (!b.tested) out(`warning: the ${key} binary is pinned but has NOT been tested with this project`);
   const dir = join(REPO_ROOT, '.cache/runtime');
   const tarball = join(dir, basename(new URL(b.url).pathname));
@@ -174,7 +196,7 @@ async function modelCmd(a: Args): Promise<void> {
   const sub = a._[1];
   const dir = modelsDir(a);
   if (a.has('scorer')) return scorerModelCmd(sub, dir, a);
-  const m = await manifest();
+  const m = await manifest(a.get('model') ?? DEFAULT_MODEL_ID);
   if (sub === 'verify') {
     const v = await verifyModel(m, dir);
     if (!v.ok) fail(`${v.reason}: ${v.detail}`);
@@ -240,6 +262,92 @@ async function scorerModelCmd(sub: string | undefined, dir: string, a: Args): Pr
   fail('usage: ./mesh model download|import|verify --scorer');
 }
 
+// ------------------------------------------------------------------ models (catalog)
+async function modelsCmd(a: Args): Promise<void> {
+  const sub = a._[1] ?? 'list';
+  const dir = modelsDir(a);
+  const catalog = await loadCatalog(CATALOG_DIR());
+  const dd = dataDir(a);
+  const statePath = join(dd, 'models-state.json');
+  const readHosted = async (): Promise<string[]> => {
+    const st = (await readJsonIfExists(statePath)) as { hosted?: string[] } | undefined;
+    if (st?.hosted) return st.hosted;
+    return (await loadConfig(dd).catch(() => null))?.model.host ?? [DEFAULT_MODEL_ID];
+  };
+  const running = async () => {
+    if (!(await exists(join(dd, FILES.config)))) return null;
+    try {
+      return (await adminFetch(a, '/admin/models')) as { models: Array<{ id: string; local?: { state: string; progress?: { done: number; total: number }; error?: string } }> };
+    } catch {
+      return null;
+    }
+  };
+  if (sub === 'list') {
+    const live = await running();
+    const hosted = await readHosted();
+    out('Vetted models (all run on the pinned llama.cpp build; RAM measured at 8k context):\n');
+    for (const e of catalog) {
+      const file = (await verifyModel(e, dir).then((v) => v.ok)) ? 'installed' : 'not installed';
+      const state = live?.models.find((m) => m.id === e.id)?.local?.state ?? (hosted.includes(e.id) ? 'hosted (node not running)' : file);
+      out(`  ${e.id.padEnd(38)} ${e.displayName.padEnd(16)} ${(e.artifact.sizeBytes / 2 ** 30).toFixed(1).padStart(4)} GB  ~${(e.resources.ramMB / 1024).toFixed(1)} GB RAM  ${e.capabilities.thinking === 'none' ? '          ' : 'thinking  '}${state}`);
+    }
+    out('\nInstall and host one: ./mesh models install <id>');
+    return;
+  }
+  const id = a._[2] ?? fail(`usage: ./mesh models ${sub} <id>`);
+  const e = catalog.find((x) => x.id === id) ?? fail(`"${id}" is not in the catalog (./mesh models)`);
+  if (sub === 'install') {
+    const live = await running();
+    if (live) {
+      await adminFetch(a, `/admin/models/${id}/install`, 'POST');
+      out(`installing ${e.displayName} on the running node…`);
+      while (true) {
+        await new Promise((r) => setTimeout(r, 1000));
+        const m = (await running())?.models.find((x) => x.id === id);
+        const st = m?.local?.state ?? '?';
+        if (m?.local?.progress) process.stdout.write(`\r  ${st} ${(m.local.progress.done / 2 ** 20).toFixed(0)} / ${(m.local.progress.total / 2 ** 20).toFixed(0)} MiB   `);
+        else process.stdout.write(`\r  ${st}                         `);
+        if (st === 'serving') {
+          out(`\n${e.displayName} is now served by this node.`);
+          return;
+        }
+        if (st === 'failed') fail(`\n${m?.local?.error ?? 'install failed'}`);
+      }
+    }
+    const v = await verifyModel(e, dir);
+    if (!v.ok) {
+      out(`downloading ${e.artifact.url}`);
+      await downloadVerified(e.artifact.url, join(dir, e.artifact.filename), { sha256: e.artifact.sha256, sizeBytes: e.artifact.sizeBytes }, progress);
+      out('\nverified');
+    }
+    const hosted = await readHosted();
+    if (!hosted.includes(id)) await atomicWriteFile(statePath, JSON.stringify({ version: 1, hosted: [...hosted, id] }, null, 2) + '\n');
+    out(`${e.displayName} will be served when the node starts. Licence: ${e.source.license}. ${e.source.attribution}`);
+    return;
+  }
+  if (sub === 'unhost') {
+    if (await running()) await adminFetch(a, `/admin/models/${id}/unhost`, 'POST');
+    else await atomicWriteFile(statePath, JSON.stringify({ version: 1, hosted: (await readHosted()).filter((x) => x !== id) }, null, 2) + '\n');
+    out(`${e.displayName} is no longer served by this node (the file is kept).`);
+    return;
+  }
+  if (sub === 'remove') {
+    if ((await readHosted()).includes(id)) fail('the node still hosts this model; run: ./mesh models unhost ' + id);
+    await unlink(join(dir, e.artifact.filename)).catch(() => undefined);
+    out(`deleted ${e.artifact.filename}`);
+    return;
+  }
+  fail('usage: ./mesh models [list|install|unhost|remove]');
+}
+
+async function adminFetch(a: Args, path: string, method = 'GET'): Promise<unknown> {
+  const e = await endpoint(a);
+  const r = await fetch(e.url + path, { method, headers: { authorization: `Bearer ${e.admin}` }, signal: AbortSignal.timeout(5000) });
+  const j = await r.json();
+  if (!r.ok) throw new Error((j as { error?: { message?: string } }).error?.message ?? `HTTP ${r.status}`);
+  return j;
+}
+
 // ------------------------------------------------------------------ init / onboarding
 async function init(a: Args): Promise<void> {
   const dir = dataDir(a);
@@ -261,14 +369,12 @@ async function init(a: Args): Promise<void> {
       ? { host: '0.0.0.0', port: 8080, trustLoopback: false }
       : { host: a.get('http-host') ?? '127.0.0.1', port: httpPort },
     runtime: docker
-      ? { mode: 'external', url: 'http://runtime:8080', apiKeyFile: '/data/runtime.key', threads: a.int('threads', 2), batchThreads: a.int('threads', 2) }
+      ? { binary: '/opt/llama/llama-server', threads: a.int('threads', 2), batchThreads: a.int('threads', 2) }
       : { threads: a.int('threads', 2), batchThreads: a.int('threads', 2) },
-    ...(docker ? { model: { dir: '/models', manifest: '/app/models/manifest.json' } } : {}),
+    ...(docker ? { model: { dir: '/models', catalog: '/app/models/catalog', runtimePin: '/app/models/runtime.json' } } : {}),
+    ...(docker ? { scorer: { manifest: '/app/models/scorer-manifest.json' } } : {}),
   };
   const r = await initNode(dir, { networkId: network ?? '', label: a.get('label') ?? 'node', config: cfg });
-  if (docker && !(await exists(join(dir, FILES.runtimeKey)))) {
-    await atomicWriteFile(join(dir, FILES.runtimeKey), randomBytes(24).toString('base64url') + '\n');
-  }
   out(r.createdConfig ? `created ${join(dir, FILES.config)}` : `kept existing ${join(dir, FILES.config)} (not overwritten)`);
   out(r.createdIdentity ? `created identity ${join(dir, FILES.identity)} (private, mode 600)` : 'kept existing identity');
   out(`\npeer ID: ${r.peerId}`);
@@ -493,7 +599,8 @@ async function clusterCmd(a: Args): Promise<void> {
       basePort: mode === 'docker' ? 8080 : a.int('base-port', 18100),
       image: a.get('image') ?? `werewolf-mesh/node:${SOFTWARE_VERSION}`,
       cpus: a.int('cpus', 2),
-      memLimit: a.get('mem') ?? '1g',
+      memLimit: a.get('mem') ?? '3g',
+      ...(a.get('models') ? { models: a.get('models')!.split(',').map((x) => x.trim()).filter(Boolean) } : {}),
     });
     out(`generated ${nodes.length} nodes in ${resolve(outDir)} (${mode}${a.has('fake') ? ', FAKE runtime for fault tests' : ''})`);
     for (const x of nodes) out(`  ${x.name}  ${x.peerId}  http://127.0.0.1:${x.httpPort}`);
@@ -536,6 +643,8 @@ async function main(): Promise<void> {
       return runtimeInstall();
     case 'model':
       return modelCmd(a);
+    case 'models':
+      return modelsCmd(a);
     case 'init':
       return init(a);
     case 'join-info': {

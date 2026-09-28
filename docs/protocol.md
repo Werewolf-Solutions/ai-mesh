@@ -36,7 +36,7 @@ The dialer writes one `status` frame, the responder replies with one `status` fr
   "status": {
     "peerId": "12D3Koo…",          // MUST equal the authenticated remote peer, else rejected
     "networkId": "my-mesh",         // MUST equal ours
-    "protocolVersion": 1, "softwareVersion": "0.1.0",
+    "protocolVersion": 2, "softwareVersion": "0.2.0",   // v0.2 also sends modelLoad: [{model, ready, active, queued, maxConcurrency, maxQueue}]
     "state": "ready" | "starting" | "not_ready" | "draining",
     "inferenceReady": true,
     "models": ["smollm2-135m-instruct-q4_k_m:sha256:2e80…"],   // ≤ 4

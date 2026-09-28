@@ -14,7 +14,9 @@
 import type { Connection, Libp2p, Stream } from '@libp2p/interface';
 import { peerIdFromString } from '@libp2p/peer-id';
 import { multiaddr, type Multiaddr } from '@multiformats/multiaddr';
-import { LIMITS, MeshError, STATUS_PROTOCOL, StatusExchange, type PeerHint, type PeerView, type StatusRecord } from '@werewolf-mesh/protocol';
+import { LIMITS, MeshError, PROTOCOL_VERSION, STATUS_PROTOCOL, StatusExchange, type PeerHint, type PeerView, type StatusRecord } from '@werewolf-mesh/protocol';
+
+export type ModelLoad = StatusRecord['modelLoad'][number];
 import { join } from 'node:path';
 import { z } from 'zod';
 import type { Admission } from '../admission.js';
@@ -65,7 +67,8 @@ export interface PeerManagerDeps {
   cfg: NodeConfig;
   selfPeerId: string;
   selfStatus: () => StatusRecord;
-  modelFingerprint: string;
+  /** Map a model fingerprint to a catalog ID for display (null if unknown here). */
+  modelName: (fingerprint: string) => string | null;
   dataDir: string;
   log: Logger;
   metrics: Metrics;
@@ -209,23 +212,42 @@ export class PeerManager {
     }
   }
 
-  /** Fresh, authenticated, ready, compatible and within failure budget. */
+  /** Fresh, authenticated, ready (serving at least one model) and within failure budget. */
   isAvailable(peerId: string): boolean {
     const e = this.peers.get(peerId);
     if (!e || !e.status) return false;
     if (!this.isConnected(peerId)) return false;
     if (this.now() - e.statusAt > this.d.statusTtlMs) return false;
     if (e.failures >= this.d.failuresBeforeUnavailable) return false;
-    return e.status.state === 'ready' && e.status.inferenceReady && e.status.models.includes(this.deps.modelFingerprint);
+    return e.status.state === 'ready' && e.status.inferenceReady;
   }
 
-  /** Snapshot used by the router. */
-  candidates(): Array<{ peerId: string; status: StatusRecord; rttMs: number }> {
-    const out: Array<{ peerId: string; status: StatusRecord; rttMs: number }> = [];
+  /** Available peers serving `fingerprint`, with that model's load. Used by the router. */
+  candidatesFor(fingerprint: string): Array<{ peerId: string; load: ModelLoad; rttMs: number }> {
+    const out: Array<{ peerId: string; load: ModelLoad; rttMs: number }> = [];
     for (const e of this.peers.values()) {
-      if (this.isAvailable(e.peerId)) out.push({ peerId: e.peerId, status: e.status!, rttMs: e.rttMs ?? 50 });
+      if (!this.isAvailable(e.peerId)) continue;
+      const load = e.status!.modelLoad.find((m) => m.model === fingerprint && m.ready);
+      if (load) out.push({ peerId: e.peerId, load, rttMs: e.rttMs ?? 50 });
     }
     return out;
+  }
+
+  /** Does peer `peerId` currently serve `fingerprint`? */
+  serves(peerId: string, fingerprint: string): boolean {
+    const e = this.peers.get(peerId);
+    return !!e?.status && this.isAvailable(peerId) && e.status.modelLoad.some((m) => m.model === fingerprint && m.ready);
+  }
+
+  /** How many available peers serve `fingerprint` (this node's local, partial view). */
+  countServing(fingerprint: string): number {
+    return this.candidatesFor(fingerprint).length;
+  }
+
+  /** Any available peer at all (for readiness: "can this gateway route anywhere?"). */
+  anyAvailable(): boolean {
+    for (const e of this.peers.values()) if (this.isAvailable(e.peerId)) return true;
+    return false;
   }
 
   /** Called by the inference client when an attempt to reach a peer fails at connection level. */
@@ -260,7 +282,8 @@ export class PeerManager {
         available: this.isAvailable(e.peerId),
         state: e.status?.state ?? null,
         inferenceReady: e.status?.inferenceReady ?? false,
-        modelCompatible: e.status ? e.status.models.includes(this.deps.modelFingerprint) : false,
+        modelCompatible: e.status ? e.status.models.some((m) => this.deps.modelName(m) !== null) : false,
+        models: (e.status?.models ?? []).map((m) => this.deps.modelName(m) ?? m),
         activeJobs: e.status?.activeJobs ?? null,
         queueLength: e.status?.queueLength ?? null,
         rttMs: e.rttMs === null ? null : Math.round(e.rttMs * 10) / 10,
@@ -394,7 +417,7 @@ export class PeerManager {
   // ---------------------------------------------------------------- status protocol
 
   private buildExchange(forPeer: string): StatusExchange {
-    return { v: 1, type: 'status', status: this.deps.selfStatus(), hints: this.hintsFor(forPeer) };
+    return { v: PROTOCOL_VERSION, type: 'status', status: this.deps.selfStatus(), hints: this.hintsFor(forPeer) };
   }
 
   /** Addresses we know for connected authorised peers, from their own identify data. */

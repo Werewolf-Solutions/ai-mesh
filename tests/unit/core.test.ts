@@ -24,10 +24,10 @@ describe('framing', () => {
     const [a, b] = await streamPair();
     const fa = new FrameStream(a, 1024);
     const fb = new FrameStream(b, 1024);
-    await fa.write({ v: 1, type: 'cancelled' });
-    expect(await fb.read(WorkerFrame)).toEqual({ v: 1, type: 'cancelled' });
+    await fa.write({ v: 2, type: 'cancelled' });
+    expect(await fb.read(WorkerFrame)).toEqual({ v: 2, type: 'cancelled' });
 
-    await lpStream(a).write(new TextEncoder().encode(JSON.stringify({ v: 2, type: 'cancelled' })));
+    await lpStream(a).write(new TextEncoder().encode(JSON.stringify({ v: 3, type: 'cancelled' })));
     await expect(fb.read(WorkerFrame)).rejects.toThrow(/unsupported protocol version/);
 
     await lpStream(a).write(new TextEncoder().encode('{nope'));
@@ -36,7 +36,7 @@ describe('framing', () => {
     await lpStream(a).write(new Uint8Array([0xff, 0xfe]));
     await expect(fb.read(WorkerFrame)).rejects.toThrow(/malformed/); // invalid UTF-8
 
-    await expect(fa.write({ v: 1, type: 'token', seq: 0, text: 'x'.repeat(2000) })).rejects.toThrow(/exceeds/);
+    await expect(fa.write({ v: 2, type: 'token', seq: 0, text: 'x'.repeat(2000) })).rejects.toThrow(/exceeds/);
   });
 
   it('refuses an incoming frame larger than the limit', async () => {
@@ -49,7 +49,7 @@ describe('framing', () => {
 
 describe('schemas', () => {
   const base = {
-    v: 1,
+    v: 2,
     type: 'infer',
     requestId: 'r1',
     attemptId: 'a1',
@@ -62,16 +62,18 @@ describe('schemas', () => {
   it('accepts a valid inference request and rejects unknown fields and limits', () => {
     expect(InferRequest.safeParse(base).success).toBe(true);
     expect(InferRequest.safeParse({ ...base, extra: 1 }).success).toBe(false);
-    expect(InferRequest.safeParse({ ...base, settings: { maxTokens: 257 } }).success).toBe(false);
+    expect(InferRequest.safeParse({ ...base, settings: { maxTokens: 20000 } }).success).toBe(false);
+    expect(InferRequest.safeParse({ ...base, settings: { maxTokens: 64, thinking: { mode: 'on', budget: 512 } } }).success).toBe(true);
+    expect(InferRequest.safeParse({ ...base, settings: { maxTokens: 64, thinking: { mode: 'maybe' } } }).success).toBe(false);
     expect(InferRequest.safeParse({ ...base, messages: [] }).success).toBe(false);
     expect(InferRequest.safeParse({ ...base, requestId: 'has space' }).success).toBe(false);
   });
   it('bounds peer-exchange hints', () => {
     const hint = { peerId: base.originPeerId, addrs: ['/ip4/1.2.3.4/tcp/1'] };
-    const status = { peerId: base.originPeerId, networkId: 'n', protocolVersion: 1, softwareVersion: 'x', state: 'ready', inferenceReady: true, models: [], activeJobs: 0, queueLength: 0, maxConcurrency: 1, maxQueue: 8, addrs: [], sentAt: 1 };
-    expect(StatusExchange.safeParse({ v: 1, type: 'status', status, hints: Array(32).fill(hint) }).success).toBe(true);
-    expect(StatusExchange.safeParse({ v: 1, type: 'status', status, hints: Array(33).fill(hint) }).success).toBe(false);
-    expect(StatusExchange.safeParse({ v: 1, type: 'status', status, hints: [{ ...hint, addrs: Array(9).fill('/ip4/1.2.3.4/tcp/1') }] }).success).toBe(false);
+    const status = { peerId: base.originPeerId, networkId: 'n', protocolVersion: 2, softwareVersion: 'x', state: 'ready', inferenceReady: true, models: [], modelLoad: [], activeJobs: 0, queueLength: 0, maxConcurrency: 1, maxQueue: 8, addrs: [], sentAt: 1 };
+    expect(StatusExchange.safeParse({ v: 2, type: 'status', status, hints: Array(32).fill(hint) }).success).toBe(true);
+    expect(StatusExchange.safeParse({ v: 2, type: 'status', status, hints: Array(33).fill(hint) }).success).toBe(false);
+    expect(StatusExchange.safeParse({ v: 2, type: 'status', status, hints: [{ ...hint, addrs: Array(9).fill('/ip4/1.2.3.4/tcp/1') }] }).success).toBe(false);
   });
 });
 
@@ -135,11 +137,11 @@ describe('DedupCache', () => {
 });
 
 describe('router', () => {
-  const st = (active: number, queue: number) => ({ peerId: 'x', networkId: 'n', protocolVersion: 1 as const, softwareVersion: '', state: 'ready' as const, inferenceReady: true, models: [], activeJobs: active, queueLength: queue, maxConcurrency: 1, maxQueue: 8, addrs: [], sentAt: 0 });
+  const st = (active: number, queued: number) => ({ model: 'm', ready: true, active, queued, maxConcurrency: 1, maxQueue: 8 });
   it('prefers idle local, spills to the least-loaded remote, and honours exclusions', () => {
     const remotes = [
-      { peerId: 'B', status: st(0, 0), rttMs: 5 },
-      { peerId: 'C', status: st(1, 3), rttMs: 1 },
+      { peerId: 'B', load: st(0, 0), rttMs: 5 },
+      { peerId: 'C', load: st(1, 3), rttMs: 1 },
     ];
     const local = { ready: true, active: 0, queued: 0, maxConcurrency: 1, maxQueue: 8 };
     const r = (l = local, exclude = new Set<string>(), outstanding = new Map<string, number>()) =>
@@ -294,5 +296,25 @@ describe('pack memory store', async () => {
       expect(isShareIntent(yes), yes).toBe(true);
     for (const no of ['How do wolves share food in a pack?', 'what is the capital of France?', 'Wolves share food with the pack after a hunt', 'Can you tell me how a pack shares food?', 'I want to add a new member to the pack'])
       expect(isShareIntent(no), no).toBe(false);
+  });
+});
+
+describe('effort → generation plan', async () => {
+  const { planGeneration } = await import('../../apps/node/src/models/effort.js');
+  const entry = (thinking: 'none' | 'toggle' | 'always', ctx = 8192, maxOut = 2048) =>
+    ({ id: 'm', capabilities: { thinking }, serving: { contextTokens: ctx, maxOutputTokens: maxOut } }) as any;
+  it('thinking models: none → off, low/medium/high → growing budgets; default is low', () => {
+    expect(planGeneration(entry('toggle'), 'none', undefined)).toMatchObject({ thinking: { mode: 'off' } });
+    expect(planGeneration(entry('toggle'), 'low', undefined).thinking).toEqual({ mode: 'on', budget: 512 });
+    expect(planGeneration(entry('toggle'), 'medium', undefined).thinking).toEqual({ mode: 'on', budget: 1536 });
+    expect(planGeneration(entry('toggle'), 'high', undefined).thinking).toEqual({ mode: 'on', budget: 4096 });
+    expect(planGeneration(entry('toggle'), undefined, undefined).effort).toBe('low');
+  });
+  it('never exceeds the context; models without thinking only change the answer length', () => {
+    const p = planGeneration(entry('toggle', 2048, 512), 'high', undefined);
+    expect(p.maxTokens + (p.thinking?.budget ?? 0)).toBeLessThanOrEqual(2048 - 1024);
+    expect(planGeneration(entry('none'), 'high', undefined)).toEqual({ maxTokens: 2048, effort: 'high' });
+    expect(planGeneration(entry('none'), 'none', undefined).thinking).toBeUndefined();
+    expect(() => planGeneration(entry('none', 8192, 512), 'low', 4000)).toThrow(/max_tokens/);
   });
 });

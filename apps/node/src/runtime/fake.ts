@@ -13,11 +13,13 @@
  *   [[fake:hang_after=K]]  stop producing after K tokens until cancelled
  *   [[fake:crash_after=K]] terminate this whole node process after K tokens
  *   [[fake:slow_start=MS]] wait before the first token
+ *   [[fake:think=N]]       when thinking is on, emit N reasoning tokens first (capped by the budget)
  */
 import { MeshError, type ChatMessage, type GenerationSettings } from '@werewolf-mesh/protocol';
 import type { GenEvent, InferenceAdapter, RuntimeStatus } from './adapter.js';
 
-export const FAKE_FINGERPRINT = 'fake-test-model:sha256:0000000000000000000000000000000000000000000000000000000000000000';
+export const fakeFingerprint = (id: string) => `${id}:sha256:${'0'.repeat(64)}`;
+export const FAKE_FINGERPRINT = fakeFingerprint('fake-test-model');
 
 function directive(text: string, name: string): number | undefined {
   const m = new RegExp(`\\[\\[fake:${name}=(\\d+)\\]\\]`).exec(text);
@@ -72,10 +74,15 @@ export class FakeAdapter implements InferenceAdapter {
     const hangAfter = directive(last, 'hang_after');
     const crashAfter = directive(last, 'crash_after');
     const slowStart = directive(last, 'slow_start');
+    const think = settings.thinking?.mode === 'on' ? Math.min(directive(last, 'think') ?? 5, settings.thinking.budget ?? Infinity) : 0;
     this.running++;
     this.totalStarted++;
     try {
       if (slowStart) await sleep(slowStart, signal);
+      for (let i = 0; i < think; i++) {
+        await sleep(delay, signal);
+        yield { type: 'token', text: `r${i} `, channel: 'reasoning' };
+      }
       for (let i = 0; i < n; i++) {
         if (failAfter !== undefined && i === failAfter) throw new MeshError('runtime_error', 'fake runtime failure');
         if (crashAfter !== undefined && i === crashAfter) {
@@ -86,7 +93,7 @@ export class FakeAdapter implements InferenceAdapter {
         yield { type: 'token', text: `t${i} ` };
       }
       const prompt = await this.countPromptTokens(messages);
-      yield { type: 'done', finishReason: n >= settings.maxTokens ? 'length' : 'stop', usage: { promptTokens: prompt, completionTokens: n } };
+      yield { type: 'done', finishReason: n >= settings.maxTokens ? 'length' : 'stop', usage: { promptTokens: prompt, completionTokens: n + think } };
     } finally {
       this.running--;
     }

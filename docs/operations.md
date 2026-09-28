@@ -21,7 +21,7 @@ git clone <repo> werewolf-ai-mesh && cd werewolf-ai-mesh
 pnpm install --frozen-lockfile && pnpm build
 ./mesh model download            # once; SHA-256 verified; kept in ./models
 ./mesh runtime install           # native mode only; Docker uses the pinned image
-docker build -f deploy/Dockerfile -t werewolf-mesh/node:0.1.0 .      # Docker mode
+docker build -f deploy/Dockerfile -t werewolf-mesh/node:0.2.0 .      # Docker mode (includes the pinned llama.cpp)
 docker pull ghcr.io/ggml-org/llama.cpp:server-b11223@sha256:8fdfad183be053cdb72d4b6a5930c3a2475730f932855ee9260193422c2564ed
 ```
 
@@ -32,7 +32,7 @@ scp models/SmolLM2-135M-Instruct-Q4_K_M.gguf other-host:~/werewolf-ai-mesh/model
 ssh other-host 'cd werewolf-ai-mesh && ./mesh model verify'         # or: ./mesh model import <path>
 ```
 
-Move the images with `docker save werewolf-mesh/node:0.1.0 ghcr.io/ggml-org/llama.cpp:server-b11223 | ssh other-host docker load`.
+Move the images with `docker save werewolf-mesh/node:0.2.0 | ssh other-host docker load`.
 
 ## 3. Launch one node
 

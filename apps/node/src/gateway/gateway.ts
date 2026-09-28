@@ -18,10 +18,12 @@ import type { InferClient } from '../p2p/infer.js';
 import type { PeerManager } from '../p2p/peers.js';
 import { abortReason, deadlineTimer, linkedController } from '../util/abort.js';
 import type { Logger } from '../util/log.js';
-import type { WorkerService } from '../worker/service.js';
+import type { ModelManager } from '../models/manager.js';
 import { rankCandidates, type Candidate } from './router.js';
 
 export interface GatewayRequest {
+  /** Fingerprint of the model to run. */
+  model: string;
   messages: ChatMessage[];
   settings: GenerationSettings;
   deadlineMs: number;
@@ -38,8 +40,8 @@ export interface AttemptRecord {
 }
 
 export type GatewayEvent =
-  | { type: 'first_token'; workerPeerId: string; route: 'local' | 'remote'; attempts: AttemptRecord[]; text: string }
-  | { type: 'token'; text: string }
+  | { type: 'first_token'; workerPeerId: string; route: 'local' | 'remote'; attempts: AttemptRecord[]; text: string; channel?: 'reasoning' }
+  | { type: 'token'; text: string; channel?: 'reasoning' }
   | {
       type: 'done';
       finishReason: FinishReason;
@@ -77,7 +79,7 @@ export class Gateway {
   constructor(
     private readonly deps: {
       selfPeerId: string;
-      worker: WorkerService;
+      models: ModelManager;
       peers: PeerManager;
       client: InferClient;
       maxInFlight: number;
@@ -90,21 +92,22 @@ export class Gateway {
   ) {}
 
   canServe(): boolean {
-    return this.deps.worker.adapter.status().ready || this.deps.peers.candidates().length > 0;
+    return this.deps.models.readyHosts().length > 0 || this.deps.peers.anyAvailable();
   }
 
-  private rank(exclude: Set<string>): Candidate[] {
-    const pool = this.deps.worker.pool;
+  private localHost(model: string) {
+    const h = this.deps.models.byFingerprint(model);
+    return h && h.state === 'serving' && h.adapter.status().ready && !h.pool.draining ? h : undefined;
+  }
+
+  private rank(model: string, exclude: Set<string>): Candidate[] {
+    const h = this.localHost(model);
     return rankCandidates({
       selfPeerId: this.deps.selfPeerId,
-      local: {
-        ready: this.deps.worker.adapter.status().ready && !pool.draining,
-        active: pool.activeCount,
-        queued: pool.queuedCount,
-        maxConcurrency: pool.maxConcurrency,
-        maxQueue: pool.maxQueue,
-      },
-      remotes: this.deps.peers.candidates(),
+      local: h
+        ? { ready: true, active: h.pool.activeCount, queued: h.pool.queuedCount, maxConcurrency: h.pool.maxConcurrency, maxQueue: h.pool.maxQueue }
+        : { ready: false, active: 0, queued: 0, maxConcurrency: 1, maxQueue: 0 },
+      remotes: this.deps.peers.candidatesFor(model),
       outstanding: this.outstanding,
       exclude,
       remotePenalty: this.deps.remotePenalty,
@@ -123,10 +126,10 @@ export class Gateway {
       return { peerId: req.target, route: 'remote', score: 0, rttMs: 0 };
     }
     if (req.prefer && !tried.has(req.prefer)) {
-      if (req.prefer === selfPeerId) return { peerId: selfPeerId, route: 'local', score: 0, rttMs: 0 };
-      if (peers.isConnected(req.prefer)) return { peerId: req.prefer, route: 'remote', score: 0, rttMs: 0 };
+      if (req.prefer === selfPeerId && this.localHost(req.model)) return { peerId: selfPeerId, route: 'local', score: 0, rttMs: 0 };
+      if (req.prefer !== selfPeerId && peers.isConnected(req.prefer)) return { peerId: req.prefer, route: 'remote', score: 0, rttMs: 0 };
     }
-    return this.rank(tried)[0] ?? null;
+    return this.rank(req.model, tried)[0] ?? null;
   }
 
   async *execute(req: GatewayRequest, signal: AbortSignal): AsyncGenerator<GatewayEvent> {
@@ -163,7 +166,7 @@ export class Gateway {
           const source =
             cand.route === 'local'
               ? this.localAttempt(requestId, attemptId, req, remaining, ctl.signal)
-              : this.deps.client.attempt(cand.peerId, { requestId, attemptId, messages: req.messages, settings: req.settings, deadlineMs: remaining }, ctl.signal);
+              : this.deps.client.attempt(cand.peerId, { model: req.model, requestId, attemptId, messages: req.messages, settings: req.settings, deadlineMs: remaining }, ctl.signal);
           for await (const ev of source) {
             if (ev.type === 'accepted') continue;
             if (ev.type === 'token') {
@@ -172,9 +175,9 @@ export class Gateway {
                 const ttft = Date.now() - started;
                 metrics.sample('ttft_ms', ttft);
                 if (firstFailureAt !== null) metrics.sample('failover_ms', Date.now() - firstFailureAt);
-                yield { type: 'first_token', workerPeerId: cand.peerId, route: cand.route, attempts, text: ev.text };
+                yield { type: 'first_token', workerPeerId: cand.peerId, route: cand.route, attempts, text: ev.text, ...(ev.channel ? { channel: ev.channel } : {}) };
               } else {
-                yield { type: 'token', text: ev.text };
+                yield { type: 'token', text: ev.text, ...(ev.channel ? { channel: ev.channel } : {}) };
               }
             } else {
               rec.outcome = 'completed';
@@ -217,7 +220,7 @@ export class Gateway {
       }
       if (lastError) throw lastError;
       if (req.target !== 'auto') throw new MeshError('no_workers', `target ${req.target} is not reachable`, 5000);
-      throw new MeshError('no_workers', 'no ready worker is reachable from this gateway', 5000);
+      throw new MeshError('no_workers', 'no node you can reach is running this model right now', 5000);
     } catch (err) {
       if (err instanceof GatewayError) throw err;
       const e = err instanceof MeshError ? err : new MeshError('internal', 'gateway error');
@@ -233,7 +236,9 @@ export class Gateway {
   }
 
   private async *localAttempt(requestId: string, attemptId: string, req: GatewayRequest, deadlineMs: number, signal: AbortSignal) {
-    const job = await this.deps.worker.prepare(
+    const host = this.localHost(req.model);
+    if (!host) throw new MeshError('model_mismatch', 'this node does not serve that model right now');
+    const job = await host.worker.prepare(
       { requestId, attemptId, originPeerId: this.deps.selfPeerId, messages: req.messages, settings: req.settings, deadlineMs },
       signal,
     );

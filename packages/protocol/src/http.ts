@@ -23,7 +23,6 @@ export const UNSUPPORTED_OPENAI_FIELDS = [
   'audio',
   'modalities',
   'prediction',
-  'reasoning_effort',
   'web_search_options',
 ] as const;
 
@@ -43,6 +42,12 @@ export const ChatCompletionRequest = z.strictObject({
   presence_penalty: z.number().min(-2).max(2).optional(),
   frequency_penalty: z.number().min(-2).max(2).optional(),
   n: z.literal(1).optional(),
+  /**
+   * How hard the model thinks before answering (models with a thinking mode):
+   * none/minimal = answer directly, low/medium/high = think with a growing budget.
+   * For models without thinking it only changes the default answer length.
+   */
+  reasoning_effort: z.enum(['none', 'minimal', 'low', 'medium', 'high']).optional(),
   user: z.string().max(256).optional(),
   store: z.boolean().optional(),
   metadata: z.record(z.string(), z.string()).optional(),
@@ -107,6 +112,8 @@ export interface PeerView {
   rttMs: number | null;
   lastStatusAgeMs: number | null;
   consecutiveFailures: number;
+  /** Catalog IDs (or fingerprints) of the models this peer says it is serving. */
+  models: string[];
   lastError: string | null;
   /** Addresses of open connections (connected) or known dial candidates (not connected). */
   addrs: string[];
@@ -121,6 +128,8 @@ export interface NodeStatusView {
   state: string;
   runtime: { kind: 'llama.cpp' | 'fake'; ready: boolean; detail: string };
   model: { id: string; fingerprint: string; verified: boolean };
+  /** Every model this node hosts, with its state and load. */
+  models: Array<{ id: string; fingerprint: string; state: string; detail: string; active: number; queued: number }>;
   worker: { active: number; queued: number; maxConcurrency: number; maxQueue: number };
   gateway: { inFlight: number; maxInFlight: number };
   listenAddrs: string[];
@@ -140,4 +149,31 @@ export interface MetricsView {
   connections: number;
   trackedPeers: number;
   dedupEntries: number;
+}
+
+/** One catalog model as seen from a gateway (GET /v1/models?all=1, GET /admin/models). */
+export interface CatalogModelView {
+  id: string;
+  name: string;
+  family: string;
+  params: string;
+  description: string;
+  license: string;
+  /** none: never thinks. toggle: thinking can be turned on/off with a budget. always: always thinks (budget still applies). */
+  thinking: 'none' | 'toggle' | 'always';
+  contextTokens: number;
+  maxOutputTokens: number;
+  downloadBytes: number;
+  ramMB: number;
+  tested: boolean;
+  fingerprint: string;
+  /** Observed locally: how many reachable nodes (incl. this one) are serving it now. */
+  available: { nodes: number; local: boolean };
+  /** Only for the node's own operator (admin): install state on this node. */
+  local?: {
+    state: 'not_installed' | 'downloading' | 'verifying' | 'starting' | 'serving' | 'installed' | 'failed' | 'stopping';
+    progress?: { done: number; total: number };
+    error?: string;
+    fit: { ok: boolean; reasons: string[] };
+  };
 }

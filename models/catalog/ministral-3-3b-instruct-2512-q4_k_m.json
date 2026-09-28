@@ -1,0 +1,55 @@
+{
+  "manifestVersion": 1,
+  "id": "ministral-3-3b-instruct-2512-q4_k_m",
+  "displayName": "Ministral 3 3B",
+  "family": "Ministral 3",
+  "params": "3B",
+  "order": 70,
+  "description": "Mistral's small instruct model, answers directly (no thinking mode).",
+  "source": {
+    "repo": "mistralai/Ministral-3-3B-Instruct-2512",
+    "url": "https://huggingface.co/mistralai/Ministral-3-3B-Instruct-2512",
+    "revisionObserved": "b35d4dfe56c142746f54dbd64f579faab2744308",
+    "license": "apache-2.0",
+    "attribution": "Ministral 3 by Mistral AI. Licensed under the Apache License 2.0."
+  },
+  "artifact": {
+    "filename": "Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
+    "repo": "mistralai/Ministral-3-3B-Instruct-2512-GGUF",
+    "revision": "eb599d408350ea2bb60452cb86be7c7b2fc28227",
+    "url": "https://huggingface.co/mistralai/Ministral-3-3B-Instruct-2512-GGUF/resolve/eb599d408350ea2bb60452cb86be7c7b2fc28227/Ministral-3-3B-Instruct-2512-Q4_K_M.gguf",
+    "sizeBytes": 2147023008,
+    "sha256": "9ed150d4367e68df0ac8e1540f6ddc65b42d0ee26378329d1ecbca60f93fc5f8",
+    "quantization": "Q4_K_M",
+    "format": "GGUF",
+    "publishedBy": "Mistral AI (the model's authors)",
+    "sha256Provenance": "Git LFS object ID published by Hugging Face at the pinned revision; recomputed after download on 2026-09-28."
+  },
+  "chatTemplate": {
+    "format": "embedded",
+    "source": "tokenizer.chat_template in the GGUF, rendered by llama.cpp (jinja)"
+  },
+  "capabilities": {
+    "thinking": "none"
+  },
+  "serving": {
+    "contextTokens": 8192,
+    "maxOutputTokens": 2048
+  },
+  "resources": {
+    "ramMB": 4200,
+    "tested": true,
+    "measured": {
+      "on": "AMD Ryzen 7 3700X, 4 threads, llama.cpp b11223, 8k context, 2026-09-28",
+      "loadMs": 5267,
+      "rssMB": 3798,
+      "decodeTokPerS": 12,
+      "promptTokPerS": 33,
+      "check": {
+        "question": "What is 17*23?",
+        "withoutThinking": "411",
+        "withThinking": null
+      }
+    }
+  }
+}

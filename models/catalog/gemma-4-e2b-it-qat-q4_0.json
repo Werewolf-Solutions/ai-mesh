@@ -1,0 +1,55 @@
+{
+  "manifestVersion": 1,
+  "id": "gemma-4-e2b-it-qat-q4_0",
+  "displayName": "Gemma 4 E2B",
+  "family": "Gemma 4",
+  "params": "E2B (≈5B total, 2B effective)",
+  "order": 50,
+  "description": "Google's efficient model with a thinking mode. Text only on the mesh.",
+  "source": {
+    "repo": "google/gemma-4-E2B-it",
+    "url": "https://huggingface.co/google/gemma-4-E2B-it",
+    "revisionObserved": "3e22461f65e89153144f8adb70e3b8c2cc9845a7",
+    "license": "apache-2.0",
+    "attribution": "Gemma 4 by Google DeepMind. Licensed under the Apache License 2.0."
+  },
+  "artifact": {
+    "filename": "gemma-4-E2B_q4_0-it.gguf",
+    "repo": "google/gemma-4-E2B-it-qat-q4_0-gguf",
+    "revision": "675cff42a74c774d6cb76f76d8eacb49b48c9b93",
+    "url": "https://huggingface.co/google/gemma-4-E2B-it-qat-q4_0-gguf/resolve/675cff42a74c774d6cb76f76d8eacb49b48c9b93/gemma-4-E2B_q4_0-it.gguf",
+    "sizeBytes": 3349516256,
+    "sha256": "fa401b55b07ee70a54c6dae3903c783a6e65064312529ea57175cb5f8dec6634",
+    "quantization": "Q4_0 (quantisation-aware trained)",
+    "format": "GGUF",
+    "publishedBy": "Google (the model's authors)",
+    "sha256Provenance": "Git LFS object ID published by Hugging Face at the pinned revision; recomputed after download on 2026-09-28."
+  },
+  "chatTemplate": {
+    "format": "embedded",
+    "source": "tokenizer.chat_template in the GGUF, rendered by llama.cpp (jinja)"
+  },
+  "capabilities": {
+    "thinking": "toggle"
+  },
+  "serving": {
+    "contextTokens": 8192,
+    "maxOutputTokens": 2048
+  },
+  "resources": {
+    "ramMB": 3500,
+    "tested": true,
+    "measured": {
+      "on": "AMD Ryzen 7 3700X, 4 threads, llama.cpp b11223, 8k context, 2026-09-28",
+      "loadMs": 5693,
+      "rssMB": 3158,
+      "decodeTokPerS": 17,
+      "promptTokPerS": 56,
+      "check": {
+        "question": "What is 17*23?",
+        "withoutThinking": "391",
+        "withThinking": "391"
+      }
+    }
+  }
+}

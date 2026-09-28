@@ -3,6 +3,7 @@ import type { PeerView } from '@werewolf-mesh/protocol';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
 import benchmarksMd from '../../../../docs/benchmarks.md?raw';
 import { usePersistent, uid, type Gateway } from '../store';
+import { useCatalog } from '../models';
 import { READING_INSTRUCTION, READING_REFERENCE, READING_TEXT, READING_TEXT_TITLE } from '../tests/readingText';
 import { Markdown } from './Markdown';
 import { NodeBadge } from './Moon';
@@ -28,6 +29,7 @@ interface ReadingRun {
   worker: string | null;
   route: string | null;
   runtime: string | null;
+  model?: string;
   promptTokens: number | null;
   /** Worker-measured: slot start → first token. */
   readMs: number | null;
@@ -124,6 +126,9 @@ type Phase = 'idle' | 'sending' | 'reading' | 'answering';
 function ReadingTest({ gateways, peers, selfPeerId, labels }: Props) {
   const [showText, setShowText] = useState(false);
   const [target, setTarget] = useState('auto');
+  const [testModel, setTestModel] = usePersistent<string>('wam.readingModel', '');
+  const catalog = useCatalog(gateways[0], 10_000);
+  const runnable = (catalog.models ?? []).filter((m) => m.available.nodes > 0);
   const [count, setCount] = useState(1);
   const [runs, setRuns] = usePersistent<ReadingRun[]>('wam.readingRuns', []);
   const [reference, setReference] = usePersistent<string>('wam.readingReference.v2', READING_REFERENCE);
@@ -190,6 +195,8 @@ function ReadingTest({ gateways, peers, selfPeerId, labels }: Props) {
       maxTokens: 48,
       temperature: 0,
       target,
+      ...(testModel ? { model: testModel } : {}),
+      effort: 'none', // measure reading, not thinking
       pack: false, // keep the reading test comparable: no pack notes as extra context
       signal,
       onMeta: (m) => {
@@ -213,6 +220,7 @@ function ReadingTest({ gateways, peers, selfPeerId, labels }: Props) {
       ...base,
       worker: meta?.workerPeerId ?? worker,
       route: meta?.route ?? null,
+      ...(meta?.model ? { model: meta.model } : {}),
       runtime: meta?.runtime ?? null,
       promptTokens: r.status === 'completed' ? (r.usage?.prompt_tokens ?? null) : null,
       readMs: meta?.timings?.firstTokenMs ?? null,
@@ -355,6 +363,17 @@ function ReadingTest({ gateways, peers, selfPeerId, labels }: Props) {
 
       <div className="mt-6 flex flex-wrap items-end gap-4">
         <label className="grid gap-1 text-sm">
+          <span>Model</span>
+          <select value={testModel} disabled={running} onChange={(e) => setTestModel(e.target.value)} className="rounded-lg border border-rule bg-paper px-3 py-2">
+            <option value="">Gateway default</option>
+            {runnable.map((m) => (
+              <option key={m.id} value={m.id}>
+                {m.name}
+              </option>
+            ))}
+          </select>
+        </label>
+        <label className="grid gap-1 text-sm">
           <span>Node that reads it</span>
           <select value={target} disabled={running} onChange={(e) => setTarget(e.target.value)} className="rounded-lg border border-rule bg-paper px-3 py-2">
             {targets.map((t) => (
@@ -433,7 +452,7 @@ function ReadingTest({ gateways, peers, selfPeerId, labels }: Props) {
               <thead className="text-slate">
                 <tr className="border-b border-rule">
                   <th className="py-2 pr-4 font-normal">When</th>
-                  <th className="py-2 pr-4 font-normal">Node</th>
+                  <th className="py-2 pr-4 font-normal">Model / node</th>
                   <th className="py-2 pr-4 font-normal">Reading time</th>
                   <th className="py-2 pr-4 font-normal">Tokens/s</th>
                   <th className="py-2 pr-4 font-normal">Meaning match</th>
@@ -452,7 +471,7 @@ function ReadingTest({ gateways, peers, selfPeerId, labels }: Props) {
                     <Fragment key={r.id}>
                       <tr className={isOpen ? '' : 'border-b border-rule/60'}>
                         <td className="py-1.5 pr-4 text-slate">{new Date(r.at).toLocaleTimeString()}</td>
-                        <td className="py-1.5 pr-4">{name(r.worker)}</td>
+                        <td className="py-1.5 pr-4">{r.model ? `${(catalog.models ?? []).find((m) => m.id === r.model)?.name ?? r.model} · ` : ''}{name(r.worker)}</td>
                         <td className="py-1.5 pr-4">{secs(r.readMs)}</td>
                         <td className="py-1.5 pr-4">{speed(r)?.toLocaleString() ?? '–'}</td>
                         <td className="py-1.5 pr-4">{c == null ? '–' : pct(c)}</td>

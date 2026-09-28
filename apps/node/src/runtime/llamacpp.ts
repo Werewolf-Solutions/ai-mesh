@@ -22,6 +22,10 @@ import { atomicWriteFile } from '../util/fs.js';
 import type { GenEvent, InferenceAdapter, RuntimeStatus } from './adapter.js';
 
 export interface LlamaCppOptions {
+  /** Short name used for this runtime's key/pid files (one runtime per hosted model). */
+  name: string;
+  /** Whether the model can think before answering (from the catalog). */
+  thinking: 'none' | 'toggle' | 'always';
   mode: 'spawn' | 'external';
   binary: string;
   url?: string;
@@ -94,13 +98,14 @@ export class LlamaCppAdapter implements InferenceAdapter {
   private async spawnChild(): Promise<void> {
     const port = await freePort();
     this.apiKey = randomBytes(24).toString('base64url');
-    const keyFile = join(this.opts.dataDir, 'runtime.key');
+    const keyFile = this.keyFile();
     await atomicWriteFile(keyFile, this.apiKey + '\n', 0o600);
     const args = [
       '-m', this.opts.modelPath,
       '--host', '127.0.0.1',
       '--port', String(port),
       '-c', String(this.opts.contextTokens * this.opts.parallel),
+      '--reasoning-format', 'deepseek',
       '-np', String(this.opts.parallel),
       '-t', String(this.opts.threads),
       '-tb', String(this.opts.batchThreads),
@@ -168,7 +173,11 @@ export class LlamaCppAdapter implements InferenceAdapter {
   }
 
   private pidFile(): string {
-    return join(this.opts.dataDir, 'runtime.pid');
+    return join(this.opts.dataDir, `runtime-${this.opts.name}.pid`);
+  }
+
+  private keyFile(): string {
+    return join(this.opts.dataDir, `runtime-${this.opts.name}.key`);
   }
 
   /** Terminate a llama-server left behind by a previous run of THIS node (matched by its key-file path). */
@@ -177,7 +186,7 @@ export class LlamaCppAdapter implements InferenceAdapter {
       const pid = Number(await readFile(this.pidFile(), 'utf8'));
       if (!Number.isInteger(pid) || pid <= 1) return;
       const cmdline = await readFile(`/proc/${pid}/cmdline`, 'utf8').catch(() => '');
-      if (cmdline.includes('llama-server') && cmdline.includes(join(this.opts.dataDir, 'runtime.key'))) {
+      if (cmdline.includes('llama-server') && cmdline.includes(this.keyFile())) {
         this.opts.log.warn({ pid }, 'terminating stale llama-server from a previous run');
         process.kill(pid, 'SIGTERM');
         await sleep(500);
@@ -230,7 +239,7 @@ export class LlamaCppAdapter implements InferenceAdapter {
     const ctl = new AbortController();
     const t = setTimeout(() => ctl.abort(), 30_000);
     try {
-      for await (const _ of this.generate([{ role: 'user', content: 'Hi' }], { maxTokens: 1, temperature: 0 }, ctl.signal)) {
+      for await (const _ of this.generate([{ role: 'user', content: 'Hi' }], { maxTokens: 1, temperature: 0, thinking: { mode: 'off' } }, ctl.signal)) {
         /* drain */
       }
     } finally {
@@ -270,11 +279,16 @@ export class LlamaCppAdapter implements InferenceAdapter {
   }
 
   async *generate(messages: ChatMessage[], settings: GenerationSettings, signal: AbortSignal): AsyncIterable<GenEvent> {
-    const body = {
+    // Thinking: off → reasoning_effort "none". On → think first; the budget is
+    // enforced here by ending the reasoning block via the control endpoint.
+    const thinkingOn = this.opts.thinking !== 'none' && (this.opts.thinking === 'always' || settings.thinking?.mode === 'on');
+    const budget = thinkingOn ? settings.thinking?.budget : undefined;
+    const body: Record<string, unknown> = {
       messages,
       stream: true,
       stream_options: { include_usage: true },
-      max_tokens: settings.maxTokens,
+      // max_tokens covers thinking + answer.
+      max_tokens: settings.maxTokens + (thinkingOn ? (budget ?? 0) : 0),
       temperature: settings.temperature,
       top_p: settings.topP,
       seed: settings.seed,
@@ -283,6 +297,10 @@ export class LlamaCppAdapter implements InferenceAdapter {
       frequency_penalty: settings.frequencyPenalty,
       cache_prompt: true,
     };
+    if (this.opts.thinking !== 'none') {
+      if (!thinkingOn) body.reasoning_effort = 'none';
+      else if (budget !== undefined) body.reasoning_control = true;
+    }
     let res: Response;
     try {
       res = await fetch(`${this.baseUrl}/v1/chat/completions`, {
@@ -306,6 +324,9 @@ export class LlamaCppAdapter implements InferenceAdapter {
     let usage: { promptTokens: number; completionTokens: number } | null = null;
     let sawDone = false;
     let runtimeError: string | null = null;
+    let completionId: string | null = null;
+    let reasoningTokens = 0;
+    let reasoningEnded = false;
     const parser = new SseParser((ev) => {
       if (ev.data === '[DONE]') {
         sawDone = true;
@@ -322,7 +343,13 @@ export class LlamaCppAdapter implements InferenceAdapter {
         runtimeError = String(j.error.message ?? 'runtime error').slice(0, 200);
         return;
       }
+      completionId ??= typeof j.id === 'string' ? j.id : null;
       const choice = j.choices?.[0];
+      const r = choice?.delta?.reasoning_content;
+      if (typeof r === 'string' && r.length > 0) {
+        reasoningTokens++;
+        queue.push({ type: 'token', text: r, channel: 'reasoning' });
+      }
       const text = choice?.delta?.content;
       if (typeof text === 'string' && text.length > 0) queue.push({ type: 'token', text });
       if (choice?.finish_reason) finishReason = choice.finish_reason === 'length' ? 'length' : 'stop';
@@ -345,6 +372,10 @@ export class LlamaCppAdapter implements InferenceAdapter {
         parser.push(decoder.decode(chunk.value, { stream: true }));
         while (queue.length) yield queue.shift()!;
         if (runtimeError) throw new MeshError('runtime_error', runtimeError);
+        if (budget !== undefined && !reasoningEnded && reasoningTokens >= budget && completionId) {
+          reasoningEnded = true;
+          void this.endReasoning(completionId);
+        }
       }
     } finally {
       // Closing the response body disconnects from llama-server, which cancels the slot's task.
@@ -352,5 +383,19 @@ export class LlamaCppAdapter implements InferenceAdapter {
     }
     if (!sawDone || !finishReason) throw new MeshError('runtime_error', 'runtime stream ended without completion');
     yield { type: 'done', finishReason, usage: usage ?? { promptTokens: 0, completionTokens: 0 } };
+  }
+
+  /** Thinking budget reached: tell llama.cpp to close the reasoning block and answer. */
+  private async endReasoning(id: string): Promise<void> {
+    try {
+      await fetch(`${this.baseUrl}/v1/chat/completions/control`, {
+        method: 'POST',
+        headers: this.headers(),
+        body: JSON.stringify({ id, action: 'reasoning_end' }),
+        signal: AbortSignal.timeout(5000),
+      });
+    } catch {
+      /* the answer will simply come later or hit max_tokens */
+    }
   }
 }

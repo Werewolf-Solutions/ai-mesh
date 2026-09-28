@@ -72,12 +72,13 @@ export class WorkerService {
       if (signal.aborted) throw abortReason(signal);
       throw err instanceof MeshError ? err : new MeshError('runtime_error', 'tokenizer unavailable');
     }
-    const budget = promptTokens + job.settings.maxTokens;
+    const thinking = job.settings.thinking?.mode === 'on' ? (job.settings.thinking.budget ?? 0) : 0;
+    const budget = promptTokens + job.settings.maxTokens + thinking;
     if (budget > this.t.contextTokens) {
       ticket.release();
       throw new MeshError(
         'context_exceeded',
-        `prompt (${promptTokens} tokens) + max_tokens (${job.settings.maxTokens}) = ${budget} exceeds the ${this.t.contextTokens}-token context`,
+        `prompt (${promptTokens} tokens) + answer (${job.settings.maxTokens})${thinking ? ` + thinking (${thinking})` : ''} = ${budget} exceeds this model's ${this.t.contextTokens}-token context`,
       );
     }
 

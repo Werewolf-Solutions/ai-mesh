@@ -28,6 +28,8 @@ export class FrameStream {
   constructor(
     readonly stream: Stream,
     private readonly maxBytes: number = LIMITS.maxFrameBytes,
+    /** Frame version this protocol speaks (status/infer: PROTOCOL_VERSION; pack memory: 1). */
+    private readonly version: number = PROTOCOL_VERSION,
   ) {
     this.lp = lpStream(stream, { maxDataLength: maxBytes });
   }
@@ -50,7 +52,7 @@ export class FrameStream {
     } catch {
       throw new ProtocolError('malformed frame (not UTF-8 JSON)');
     }
-    if (typeof obj !== 'object' || obj === null || (obj as { v?: unknown }).v !== PROTOCOL_VERSION) {
+    if (typeof obj !== 'object' || obj === null || (obj as { v?: unknown }).v !== this.version) {
       throw new ProtocolError(`unsupported protocol version ${JSON.stringify((obj as { v?: unknown } | null)?.v ?? null)}`);
     }
     const parsed = schema.safeParse(obj);

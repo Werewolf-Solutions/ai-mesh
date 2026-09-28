@@ -18,6 +18,7 @@ import {
   InferRequest,
   LIMITS,
   MeshError,
+  PROTOCOL_VERSION,
   WorkerFrame,
   type ChatMessage,
   type FinishReason,
@@ -29,12 +30,12 @@ import type { NodeConfig } from '../config.js';
 import type { Metrics } from '../metrics.js';
 import { abortReason, linkedController, Watchdog } from '../util/abort.js';
 import type { Logger } from '../util/log.js';
-import type { WorkerService } from '../worker/service.js';
+import type { ModelManager } from '../models/manager.js';
 import { FrameStream, ProtocolError } from './framing.js';
 
 export type AttemptEvent =
   | { type: 'accepted'; queuePosition: number; promptTokens: number }
-  | { type: 'token'; text: string }
+  | { type: 'token'; text: string; channel?: 'reasoning' }
   | { type: 'done'; finishReason: FinishReason; usage: Usage; timings?: { queueMs: number; firstTokenMs: number; totalMs: number } };
 
 // -------------------------------------------------------------------- worker side
@@ -43,8 +44,7 @@ export class InferHandler {
   constructor(
     private readonly deps: {
       admission: Admission;
-      worker: WorkerService;
-      fingerprint: string;
+      models: ModelManager;
       selfPeerId: string;
       cfg: NodeConfig;
       metrics: Metrics;
@@ -80,17 +80,18 @@ export class InferHandler {
     const reject = async (e: MeshError) => {
       metrics.inc(`p2p_infer_rejected_${e.code}`);
       await fs
-        .write({ v: 1, type: 'rejected', requestId: req.requestId, attemptId: req.attemptId, code: e.code, message: e.message.slice(0, LIMITS.maxErrorChars), ...(e.retryAfterMs !== undefined ? { retryAfterMs: Math.round(e.retryAfterMs) } : {}) })
+        .write({ v: PROTOCOL_VERSION, type: 'rejected', requestId: req.requestId, attemptId: req.attemptId, code: e.code, message: e.message.slice(0, LIMITS.maxErrorChars), ...(e.retryAfterMs !== undefined ? { retryAfterMs: Math.round(e.retryAfterMs) } : {}) })
         .catch(() => undefined);
       await fs.close();
     };
     if (req.originPeerId !== remote) return reject(new MeshError('forbidden', 'originPeerId must be the connecting peer (no forwarding)'));
-    if (req.model !== this.deps.fingerprint) return reject(new MeshError('model_mismatch', `worker serves ${this.deps.fingerprint}`));
+    const host = this.deps.models.byFingerprint(req.model);
+    if (!host || host.state !== 'serving') return reject(new MeshError('model_mismatch', 'this worker does not serve that model right now'));
 
     const ctl = new AbortController();
     let job;
     try {
-      job = await this.deps.worker.prepare(
+      job = await host.worker.prepare(
         { requestId: req.requestId, attemptId: req.attemptId, originPeerId: remote, messages: req.messages, settings: req.settings, deadlineMs: req.deadlineMs },
         ctl.signal,
       );
@@ -98,7 +99,7 @@ export class InferHandler {
       return reject(err instanceof MeshError ? err : new MeshError('internal', 'worker error'));
     }
     try {
-      await fs.write({ v: 1, type: 'accepted', requestId: req.requestId, attemptId: req.attemptId, workerPeerId: this.deps.selfPeerId, queuePosition: job.queuePosition, promptTokens: job.promptTokens });
+      await fs.write({ v: PROTOCOL_VERSION, type: 'accepted', requestId: req.requestId, attemptId: req.attemptId, workerPeerId: this.deps.selfPeerId, queuePosition: job.queuePosition, promptTokens: job.promptTokens });
     } catch {
       job.abandon();
       fs.abort('write failed');
@@ -125,17 +126,17 @@ export class InferHandler {
     let seq = 0;
     try {
       for await (const ev of job.run(ctl.signal)) {
-        if (ev.type === 'token') await fs.write({ v: 1, type: 'token', seq: seq++, text: ev.text });
-        else await fs.write({ v: 1, type: 'completed', finishReason: ev.finishReason, usage: ev.usage, timings: job.timings });
+        if (ev.type === 'token') await fs.write({ v: PROTOCOL_VERSION, type: 'token', seq: seq++, text: ev.text, ...(ev.channel ? { channel: ev.channel } : {}) });
+        else await fs.write({ v: PROTOCOL_VERSION, type: 'completed', finishReason: ev.finishReason, usage: ev.usage, timings: job.timings });
       }
       metrics.inc('p2p_infer_completed');
     } catch (err) {
       const e = err instanceof MeshError ? err : new MeshError('runtime_error', 'generation failed');
       if (e.code === 'cancelled') {
         metrics.inc('p2p_infer_cancelled');
-        await fs.write({ v: 1, type: 'cancelled' }).catch(() => undefined);
+        await fs.write({ v: PROTOCOL_VERSION, type: 'cancelled' }).catch(() => undefined);
       } else {
-        await fs.write({ v: 1, type: 'failed', code: e.code, message: e.message.slice(0, LIMITS.maxErrorChars) }).catch(() => undefined);
+        await fs.write({ v: PROTOCOL_VERSION, type: 'failed', code: e.code, message: e.message.slice(0, LIMITS.maxErrorChars) }).catch(() => undefined);
       }
     } finally {
       finished = true;
@@ -148,6 +149,8 @@ export class InferHandler {
 // -------------------------------------------------------------------- gateway side
 
 export interface RemoteAttemptSpec {
+  /** Model fingerprint to run. */
+  model: string;
   requestId: string;
   attemptId: string;
   messages: ChatMessage[];
@@ -160,7 +163,6 @@ export class InferClient {
     private readonly deps: {
       libp2p: Libp2p;
       selfPeerId: string;
-      fingerprint: string;
       cfg: NodeConfig;
       metrics: Metrics;
     },
@@ -187,12 +189,12 @@ export class InferClient {
       stream.inactivityTimeout = cfg.timeouts.maxDeadlineMs;
       fs = new FrameStream(stream);
       const req: InferRequest = {
-        v: 1,
+        v: PROTOCOL_VERSION,
         type: 'infer',
         requestId: spec.requestId,
         attemptId: spec.attemptId,
         originPeerId: this.deps.selfPeerId,
-        model: this.deps.fingerprint,
+        model: spec.model,
         messages: spec.messages,
         settings: spec.settings,
         deadlineMs: Math.max(100, Math.round(spec.deadlineMs)),
@@ -215,7 +217,7 @@ export class InferClient {
         if (f.type === 'token') {
           if (f.seq !== expectSeq++) throw new ProtocolError('token sequence gap');
           dog.arm(cfg.timeouts.streamIdleMs, () => new MeshError('stream_idle_timeout', `worker silent for ${cfg.timeouts.streamIdleMs} ms`));
-          yield { type: 'token', text: f.text };
+          yield { type: 'token', text: f.text, ...(f.channel ? { channel: f.channel } : {}) };
         } else if (f.type === 'completed') {
           terminal = true;
           yield { type: 'done', finishReason: f.finishReason, usage: f.usage, ...(f.timings ? { timings: f.timings } : {}) };
@@ -236,7 +238,7 @@ export class InferClient {
         if (!terminal) {
           // Best-effort explicit cancel, then close; the worker also treats EOF as cancel.
           await fs
-            .write({ v: 1, type: 'cancel', requestId: spec.requestId, attemptId: spec.attemptId }, AbortSignal.timeout(500))
+            .write({ v: PROTOCOL_VERSION, type: 'cancel', requestId: spec.requestId, attemptId: spec.attemptId }, AbortSignal.timeout(500))
             .catch(() => undefined);
           fs.abort('attempt ended');
         } else {

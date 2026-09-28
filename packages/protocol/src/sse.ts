@@ -75,7 +75,7 @@ export interface ChatCompletionChunk {
   model: string;
   choices: Array<{
     index: 0;
-    delta: { role?: 'assistant'; content?: string };
+    delta: { role?: 'assistant'; content?: string; reasoning_content?: string };
     finish_reason: 'stop' | 'length' | null;
   }>;
   usage?: { prompt_tokens: number; completion_tokens: number; total_tokens: number };

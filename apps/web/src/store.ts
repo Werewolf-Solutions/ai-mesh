@@ -25,6 +25,13 @@ export interface Message {
   gatewayUrl?: string;
   runtime?: string | null;
   attempts?: Array<{ workerPeerId: string; outcome: string }>;
+  /** Thinking text (models with a thinking mode). */
+  reasoning?: string;
+  /** How long the model thought before answering, ms. */
+  thinkingMs?: number;
+  /** Model and effort used for this answer. */
+  model?: string;
+  effort?: string;
   /** Pack notes the gateway gave the model for this answer. */
   packNotes?: Array<{ id: string; title: string; solution?: string; similarity: number }>;
   /** Set on an answer after it was shared with the pack. */

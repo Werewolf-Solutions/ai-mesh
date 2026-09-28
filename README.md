@@ -2,12 +2,15 @@
 
 A self-hosted, peer-to-peer network for running an openly licensed language model on computers you and people you trust control. No commercial AI API, subscription, account, blockchain or token is needed to use it.
 
-**Version 0.1 is replicated inference.** Every full node holds a *complete* copy of the same small model (SmolLM2-135M-Instruct, 4-bit GGUF) and the mesh spreads requests across nodes. More nodes give more serving capacity and survive more failures. They do **not** make the model smarter, pool memory, or split a model across machines; that is future work ([roadmap](docs/roadmap.md)).
+**Version 0.2 is replicated inference with a choice of models.** You pick a model from a vetted catalog (from SmolLM2 135M up to Qwen3 8B, all Apache-2.0) and an effort level, like in ChatGPT. Every node that serves a model holds a *complete* copy of it, and the mesh sends each request to a node serving the chosen model. Running a model on your computer shares it with the whole pack. More nodes give more capacity and survive more failures. They do **not** make a model smarter, pool memory, or split a model across machines; that is future work ([roadmap](docs/roadmap.md)).
 
-## What works in v0.1
+## What works
 
 Each full node:
 
+- lets you **choose a model and an effort level** ([docs/models.md](docs/models.md)):
+  - Fast answers straight away; Balanced and Thorough let models with a thinking mode reason first, within a token budget the mesh enforces.
+  - A model nobody runs yet can be downloaded and started on your own node with one click. It is SHA-256 verified, resumable, and checked to fit your RAM and disk, and it is then served to the whole pack.
 - answers questions with a real local model: a pinned llama.cpp runtime runs as a separate process or container, and the model file is SHA-256 verified before every load
 - has its own persistent Ed25519 identity, and accepts only the peers its operator approved
 - finds other approved peers through bootstrap addresses, a peer cache, and bounded peer exchange; no central coordinator is required
@@ -43,7 +46,7 @@ To run it in the background, use `./mesh start --detach` and `./mesh stop`. Stop
 ### With Docker instead
 
 ```bash
-docker build -f deploy/Dockerfile -t werewolf-mesh/node:0.1.0 .
+docker build -f deploy/Dockerfile -t werewolf-mesh/node:0.2.0 .
 ./mesh model download
 ./mesh init --docker --data data/node --network my-mesh --label laptop
 cp .env.example .env        # set MESH_UID/MESH_GID to $(id -u)/$(id -g)
@@ -108,7 +111,8 @@ Full steps, including a second relay, are in [docs/operations.md](docs/operation
 |---|---|
 | `./mesh doctor` | Prerequisite checks (Node, CPU/RAM/disk, Docker, model hash, runtime build, permissions, ports) |
 | `./mesh runtime install` | Download the pinned llama.cpp build (SHA-256 checked) |
-| `./mesh model download` / `import <file>` / `verify` | Get, import or re-verify the pinned GGUF |
+| `./mesh models [install\|unhost\|remove] ID` | List the model catalog; download and serve, stop, or delete a model |
+| `./mesh model download` / `import <file>` / `verify` `[--model ID]` | Get, import or re-verify a catalog model's GGUF |
 | `./mesh init` | Create config, identity and HTTP tokens (never overwrites) |
 | `./mesh join-info` | Export public join info |
 | `./mesh peers approve\|revoke\|list\|status` | Manage and inspect authorised peers |
@@ -135,6 +139,7 @@ What was run, and what could not be, is recorded in [docs/testing.md](docs/testi
 - [Peer protocol](docs/protocol.md) and [HTTP API](docs/api.md)
 - [Ubuntu operations guide](docs/operations.md)
 - [Security assumptions](docs/security.md)
+- [Models, effort and sharing compute](docs/models.md)
 - [Pack memory](docs/pack-memory.md)
 - [Model provenance](docs/model.md)
 - [Benchmarks](docs/benchmarks.md) · [Testing](docs/testing.md) · [Roadmap](docs/roadmap.md) · [Progress checklist](PROGRESS.md)

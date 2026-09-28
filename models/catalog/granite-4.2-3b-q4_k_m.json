@@ -1,0 +1,55 @@
+{
+  "manifestVersion": 1,
+  "id": "granite-4.2-3b-q4_k_m",
+  "displayName": "Granite 4.2 3B",
+  "family": "Granite 4.2",
+  "params": "3B",
+  "order": 60,
+  "description": "Business-focused assistant from IBM with an optional thinking mode.",
+  "source": {
+    "repo": "ibm-granite/granite-4.2-3b",
+    "url": "https://huggingface.co/ibm-granite/granite-4.2-3b",
+    "revisionObserved": "e459acceac81e5fe67c07d9cfc72329a332e7eb1",
+    "license": "apache-2.0",
+    "attribution": "Granite 4.2 by IBM. Licensed under the Apache License 2.0."
+  },
+  "artifact": {
+    "filename": "granite-4.2-3b-Q4_K_M.gguf",
+    "repo": "ibm-granite/granite-4.2-3b-GGUF",
+    "revision": "c40945d71cd90f249a56985e8155551a9188dc30",
+    "url": "https://huggingface.co/ibm-granite/granite-4.2-3b-GGUF/resolve/c40945d71cd90f249a56985e8155551a9188dc30/granite-4.2-3b-Q4_K_M.gguf",
+    "sizeBytes": 2244011552,
+    "sha256": "e0406663965846ae22a403456eb826ccce5f450840491f71952f18a7cb78e7d5",
+    "quantization": "Q4_K_M",
+    "format": "GGUF",
+    "publishedBy": "IBM (the model's authors)",
+    "sha256Provenance": "Git LFS object ID published by Hugging Face at the pinned revision; recomputed after download on 2026-09-28."
+  },
+  "chatTemplate": {
+    "format": "embedded",
+    "source": "tokenizer.chat_template in the GGUF, rendered by llama.cpp (jinja)"
+  },
+  "capabilities": {
+    "thinking": "toggle"
+  },
+  "serving": {
+    "contextTokens": 8192,
+    "maxOutputTokens": 2048
+  },
+  "resources": {
+    "ramMB": 4600,
+    "tested": true,
+    "measured": {
+      "on": "AMD Ryzen 7 3700X, 4 threads, llama.cpp b11223, 8k context, 2026-09-28",
+      "loadMs": 5890,
+      "rssMB": 4145,
+      "decodeTokPerS": 13,
+      "promptTokPerS": 41,
+      "check": {
+        "question": "What is 17*23?",
+        "withoutThinking": "391",
+        "withThinking": "391"
+      }
+    }
+  }
+}

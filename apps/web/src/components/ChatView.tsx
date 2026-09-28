@@ -2,7 +2,9 @@ import { MeshClient } from '@werewolf-mesh/client';
 import { isShareIntent } from '@werewolf-mesh/protocol';
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { PackApi, titleFrom } from '../pack';
-import { uid, type Chat, type Gateway, type Message } from '../store';
+import { uid, usePersistent, type Chat, type Gateway, type Message } from '../store';
+import { useCatalog, type Effort } from '../models';
+import { ModelPicker } from './ModelPicker';
 import { NodeBadge } from './Moon';
 import { ShareCard } from './ShareCard';
 
@@ -35,6 +37,11 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
   const [sharing, setSharing] = useState<string | null>(null);
   const [notesOpen, setNotesOpen] = useState<string | null>(null);
   const [thanked, setThanked] = useState<Set<string>>(new Set());
+  const [model, setModel] = usePersistent<string | undefined>('wam.model', undefined);
+  const [effort, setEffort] = usePersistent<Effort>('wam.effort', 'low');
+  const [openThinking, setOpenThinking] = useState<Set<string>>(new Set());
+  const cat = useCatalog(gateways[0]);
+  const modelName = (id: string) => cat.models?.find((x) => x.id === id)?.name ?? id;
   const abortRef = useRef<AbortController | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const client = useMemo(() => new MeshClient(gateways.map((g) => ({ url: g.url, token: g.token || g.adminToken || undefined, label: g.label }))), [gateways]);
@@ -53,18 +60,34 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
     const ctl = new AbortController();
     abortRef.current = ctl;
     setBusy(true);
+    const t0 = performance.now();
+    let thinkStart = 0;
+    let thinkEnd = 0;
     try {
       const r = await client.chat({
+        model,
+        effort,
+        onReasoning: (_t, full) => {
+          thinkStart ||= performance.now();
+          patch({ reasoning: full });
+        },
         // Only complete exchanges are sent as context; interrupted/failed answers and UI-only messages are left out.
         messages: history.filter((m) => !m.meta && (m.role === 'user' || m.status === 'completed')).map((m) => ({ role: m.role, content: m.content })),
         maxTokens: 256,
         signal: ctl.signal,
-        onToken: (_t, full) => patch({ content: full }),
+        onToken: (_t, full) => {
+          if (thinkStart && !thinkEnd) {
+            thinkEnd = performance.now();
+            patch({ thinkingMs: Math.round(thinkEnd - t0) });
+          }
+          patch({ content: full });
+        },
         onMeta: (meta) => patch({ worker: meta.workerPeerId, route: meta.route, gatewayUrl: meta.gatewayUrl, runtime: meta.runtime }),
       });
       const notes = r.status === 'completed' || r.status === 'interrupted' ? r.meta.packNotes : undefined;
-      if (r.status === 'completed') patch({ content: r.text, status: 'completed', attempts: r.meta.attempts, ...(notes ? { packNotes: notes } : {}) });
-      else if (r.status === 'interrupted') patch({ content: r.text, status: 'interrupted', error: r.error.message, attempts: r.meta.attempts });
+      const extra = r.status === 'completed' || r.status === 'interrupted' ? { reasoning: r.reasoning || undefined, model: r.meta.model, effort: r.meta.effort } : {};
+      if (r.status === 'completed') patch({ content: r.text, status: 'completed', attempts: r.meta.attempts, ...extra, ...(notes ? { packNotes: notes } : {}) });
+      else if (r.status === 'interrupted') patch({ content: r.text, status: 'interrupted', error: r.error.message, attempts: r.meta.attempts, ...extra });
       else if (r.status === 'cancelled') patch({ content: r.text, status: 'cancelled' });
       else
         patch({
@@ -161,6 +184,7 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
               <article key={m.id} className="rise mb-8" aria-live={m.status === 'streaming' ? 'polite' : undefined}>
                 <div className="mb-2 flex flex-wrap items-center gap-2">
                   {m.worker ? <NodeBadge peerId={m.worker} label={labels[m.worker]} route={m.route} /> : m.status === 'streaming' ? <span className="text-sm text-slate">Finding a node…</span> : null}
+                  {m.model && <span className="text-xs text-slate">{modelName(m.model)}{m.effort ? ` · ${m.effort === 'none' || m.effort === 'minimal' ? 'fast' : m.effort === 'low' ? 'balanced' : m.effort === 'high' ? 'thorough' : m.effort}` : ''}</span>}
                   {m.runtime === 'fake' && <span className="rounded bg-blood px-1.5 text-xs text-paper">test runtime, not a model</span>}
                   {m.attempts && m.attempts.length > 1 && (
                     <span className="text-xs text-slate" title={m.attempts.map((a) => `${a.workerPeerId.slice(-6)}: ${a.outcome}`).join('\n')}>
@@ -194,7 +218,32 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
                     </ul>
                   </div>
                 )}
-                <div className={`whitespace-pre-wrap font-display text-[1.075rem] leading-[1.65] ${m.status === 'streaming' ? 'caret' : ''} ${m.status === 'interrupted' ? 'text-ink/75' : ''}`}>
+                {m.reasoning && (
+                  <div className="mb-3 border-l-2 border-rule pl-3 text-sm">
+                    {m.status === 'streaming' && !m.content ? (
+                      <>
+                        <p className="text-slate">Thinking…</p>
+                        {/* column-reverse keeps the newest thinking in view while it streams */}
+                        <div className="mt-1 flex max-h-40 flex-col-reverse overflow-y-auto">
+                          <p className="caret whitespace-pre-wrap text-slate">{m.reasoning.slice(-1500)}</p>
+                        </div>
+                      </>
+                    ) : (
+                      <>
+                        <button
+                          type="button"
+                          className="text-slate underline decoration-rule underline-offset-2 hover:text-ink"
+                          aria-expanded={openThinking.has(m.id)}
+                          onClick={() => setOpenThinking((s) => { const n = new Set(s); if (n.has(m.id)) n.delete(m.id); else n.add(m.id); return n; })}
+                        >
+                          {m.thinkingMs ? `Thought for ${(m.thinkingMs / 1000).toFixed(m.thinkingMs < 10_000 ? 1 : 0)} s` : 'Thinking'} · {openThinking.has(m.id) ? 'hide' : 'show'}
+                        </button>
+                        {openThinking.has(m.id) && <p className="mt-1 whitespace-pre-wrap text-slate">{m.reasoning}</p>}
+                      </>
+                    )}
+                  </div>
+                )}
+                <div className={`whitespace-pre-wrap font-display text-[1.075rem] leading-[1.65] ${m.status === 'streaming' && (m.content || !m.reasoning) ? 'caret' : ''} ${m.status === 'interrupted' ? 'text-ink/75' : ''}`}>
                   {m.content}
                 </div>
                 {m.status && m.status !== 'streaming' && !done && (
@@ -241,6 +290,7 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
           send();
         }}
       >
+        <ModelPicker cat={cat} model={model} effort={effort} onModel={setModel} onEffort={setEffort} disabled={busy} />
         <div className="mx-auto flex max-w-[72ch] items-end gap-2">
           <label htmlFor="composer" className="sr-only">
             Message
@@ -270,7 +320,7 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
           )}
         </div>
         <p className="mx-auto mt-2 max-w-[72ch] text-xs text-slate">
-          SmolLM2-135M is a very small model: expect short, often wrong answers. Every node runs a full copy; more nodes add capacity, not intelligence.
+          Small models make mistakes, especially without thinking. Every node serving a model runs a full copy; more nodes add capacity, not intelligence.
         </p>
       </form>
     </div>

@@ -1,0 +1,63 @@
+{
+  "manifestVersion": 1,
+  "id": "smollm2-135m-instruct-q4_k_m",
+  "displayName": "SmolLM2 135M",
+  "family": "SmolLM2",
+  "params": "135M",
+  "order": 10,
+  "description": "Tiny and very fast. Good for testing the mesh; answers are often wrong.",
+  "source": {
+    "repo": "HuggingFaceTB/SmolLM2-135M-Instruct",
+    "url": "https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct",
+    "revisionObserved": "12fd25f77366fa6b3b4b768ec3050bf629380bac",
+    "license": "apache-2.0",
+    "attribution": "SmolLM2 by Hugging Face (HuggingFaceTB). Licensed under the Apache License 2.0.",
+    "revisionNote": "Revision of the official repository observed on 2026-09-28 when this manifest was written. The GGUF converter did not record which upstream revision it converted."
+  },
+  "artifact": {
+    "filename": "SmolLM2-135M-Instruct-Q4_K_M.gguf",
+    "repo": "bartowski/SmolLM2-135M-Instruct-GGUF",
+    "revision": "09816acd5d99df7be770d85ea30822623dab342c",
+    "url": "https://huggingface.co/bartowski/SmolLM2-135M-Instruct-GGUF/resolve/09816acd5d99df7be770d85ea30822623dab342c/SmolLM2-135M-Instruct-Q4_K_M.gguf",
+    "sizeBytes": 105454432,
+    "sha256": "2e8040ceae7815abe0dcb3540b9995eaa1fa0d2ca9e797d0a635ae4433c68c2d",
+    "quantization": "Q4_K_M",
+    "format": "GGUF",
+    "publishedBy": "bartowski (community quantiser; the only pinned third-party conversion)",
+    "sha256Provenance": "Git LFS object ID published by Hugging Face at the pinned revision; recomputed after download on 2026-09-28.",
+    "conversion": {
+      "by": "bartowski (third-party community quantiser)",
+      "tool": "llama.cpp convert_hf_to_gguf.py + llama-quantize with importance matrix",
+      "llamaCppRelease": "b3991",
+      "statement": "As stated in the model card at the pinned revision. The card declares base_model HuggingFaceTB/SmolLM2-135M-Instruct and license apache-2.0.",
+      "reproducible": "A self-converted file will NOT match this SHA-256 (imatrix quantisation is not bit-reproducible across versions). See docs/model.md for the conversion command and how to publish a separate manifest."
+    }
+  },
+  "chatTemplate": {
+    "format": "embedded",
+    "source": "tokenizer.chat_template in the GGUF, rendered by llama.cpp (jinja)"
+  },
+  "capabilities": {
+    "thinking": "none"
+  },
+  "serving": {
+    "contextTokens": 2048,
+    "maxOutputTokens": 512
+  },
+  "resources": {
+    "ramMB": 400,
+    "tested": true,
+    "measured": {
+      "on": "AMD Ryzen 7 3700X, 4 threads, llama.cpp b11223, 8k context, 2026-09-28",
+      "loadMs": 610,
+      "rssMB": 332,
+      "decodeTokPerS": 176,
+      "promptTokPerS": 585,
+      "check": {
+        "question": "What is 17*23?",
+        "withoutThinking": "17*23 = 421",
+        "withThinking": null
+      }
+    }
+  }
+}

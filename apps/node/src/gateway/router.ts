@@ -9,7 +9,7 @@
  * (a hint, possibly up to one probe interval stale) plus what this gateway has
  * itself sent there. Workers enforce their own limits regardless.
  */
-import type { StatusRecord } from '@werewolf-mesh/protocol';
+import type { ModelLoad } from '../p2p/peers.js';
 
 export interface Candidate {
   peerId: string;
@@ -29,7 +29,7 @@ export interface LocalLoad {
 export function rankCandidates(opts: {
   selfPeerId: string;
   local: LocalLoad;
-  remotes: Array<{ peerId: string; status: StatusRecord; rttMs: number }>;
+  remotes: Array<{ peerId: string; load: ModelLoad; rttMs: number }>;
   outstanding: Map<string, number>;
   exclude: Set<string>;
   remotePenalty: number;
@@ -47,9 +47,9 @@ export function rankCandidates(opts: {
   }
   for (const r of opts.remotes) {
     if (opts.exclude.has(r.peerId)) continue;
-    const s = r.status;
-    const pending = s.activeJobs + s.queueLength + (opts.outstanding.get(r.peerId) ?? 0);
-    const full = s.queueLength >= s.maxQueue && s.activeJobs >= s.maxConcurrency;
+    const s = r.load;
+    const pending = s.active + s.queued + (opts.outstanding.get(r.peerId) ?? 0);
+    const full = s.queued >= s.maxQueue && s.active >= s.maxConcurrency;
     out.push({
       peerId: r.peerId,
       route: 'remote',

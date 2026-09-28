@@ -1,78 +1,36 @@
-# One Werewolf AI Mesh full node: node service + separate pinned llama.cpp runtime.
+# One Werewolf AI Mesh full node.
 #
-#   cp .env.example .env            # then edit
-#   ./mesh model download           # once, into ./models (or ./mesh model import <file>)
+#   cp .env.example .env            # then edit (MESH_UID/MESH_GID!)
+#   ./mesh model download           # optional: pre-fetch the default model into ./models
 #   ./mesh init --docker --data ./data/node --network <id> --label <name> [--announce ...] [--bootstrap ...]
 #   docker compose --env-file .env -f deploy/compose.yaml up -d
 #
-# The runtime is on an internal network with NO published port and no internet access.
+# The container runs the node and, for each hosted model, a llama.cpp process
+# bound to 127.0.0.1 INSIDE the container (never published). Operators can
+# install more catalog models from the UI; files go to MESH_MODELS_DIR and are
+# SHA-256 verified before every load.
 name: werewolf-mesh
 
-x-hardening: &hardening
-  user: "${MESH_UID:-1000}:${MESH_GID:-1000}"
-  read_only: true
-  cap_drop: [ALL]
-  security_opt: ["no-new-privileges:true"]
-  tmpfs: ["/tmp:size=16m"]
-
 services:
-  model-verify:
-    <<: *hardening
-    image: ${MESH_IMAGE:-werewolf-mesh/node:0.1.0}
-    command: ["model", "verify", "--dir", "/models"]
-    network_mode: none
-    restart: "no"
-    volumes: ["${MESH_MODELS_DIR:-../models}:/models:ro"]
-
-  runtime:
-    <<: *hardening
-    image: ghcr.io/ggml-org/llama.cpp:server-b11223@sha256:8fdfad183be053cdb72d4b6a5930c3a2475730f932855ee9260193422c2564ed
-    command:
-      - "-m"
-      - "/models/SmolLM2-135M-Instruct-Q4_K_M.gguf"
-      - "--host"
-      - "0.0.0.0"
-      - "--port"
-      - "8080"
-      - "-c"
-      - "2048"
-      - "-np"
-      - "1"
-      - "-t"
-      - "${MESH_THREADS:-2}"
-      - "-tb"
-      - "${MESH_THREADS:-2}"
-      - "-n"
-      - "256"
-      - "--api-key-file"
-      - "/keys/runtime.key"
-      - "--no-webui"
-      - "--offline"
-      - "--no-slots"
-    volumes:
-      - "${MESH_MODELS_DIR:-../models}:/models:ro"
-      - "${MESH_DATA_DIR:-../data/node}/runtime.key:/keys/runtime.key:ro"
-    networks: [runtime]
-    restart: unless-stopped
-    cpus: ${MESH_RUNTIME_CPUS:-2}
-    mem_limit: ${MESH_RUNTIME_MEM:-1g}
-    depends_on:
-      model-verify: { condition: service_completed_successfully }
-
   node:
-    <<: *hardening
-    image: ${MESH_IMAGE:-werewolf-mesh/node:0.1.0}
+    image: ${MESH_IMAGE:-werewolf-mesh/node:0.2.0}
     build:
       context: ..
       dockerfile: deploy/Dockerfile
+    user: "${MESH_UID:-1000}:${MESH_GID:-1000}"
+    read_only: true
+    cap_drop: [ALL]
+    security_opt: ["no-new-privileges:true"]
+    tmpfs: ["/tmp:size=64m"]
     command: ["start", "--data", "/data"]
     environment:
       MESH_DATA_DIR: /data
       MESH_LOG_LEVEL: ${MESH_LOG_LEVEL:-info}
+      MESH_THREADS: ${MESH_THREADS:-2}
     volumes:
       - "${MESH_DATA_DIR:-../data/node}:/data"
-      - "${MESH_MODELS_DIR:-../models}:/models:ro"
-    networks: [mesh, runtime]
+      # Read-write so the node's operator can install catalog models from the UI.
+      - "${MESH_MODELS_DIR:-../models}:/models"
     ports:
       # HTTP API + UI. Loopback only by default; put an HTTPS reverse proxy in front for remote use.
       - "${MESH_HTTP_BIND:-127.0.0.1}:${MESH_HTTP_PORT:-8080}:8080"
@@ -81,11 +39,6 @@ services:
       - "${MESH_P2P_BIND:-127.0.0.1}:${MESH_P2P_PORT:-4001}:4001"
     restart: unless-stopped
     stop_grace_period: 25s
-    cpus: ${MESH_NODE_CPUS:-1}
-    mem_limit: ${MESH_NODE_MEM:-512m}
-    depends_on:
-      runtime: { condition: service_started }
-
-networks:
-  mesh: {}
-  runtime: { internal: true }
+    # Budget for the node AND the models it hosts (see the catalog's RAM figures).
+    cpus: ${MESH_CPUS:-2}
+    mem_limit: ${MESH_MEM:-3g}

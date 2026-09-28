@@ -1,0 +1,55 @@
+{
+  "manifestVersion": 1,
+  "id": "smollm2-1.7b-instruct-q4_k_m",
+  "displayName": "SmolLM2 1.7B",
+  "family": "SmolLM2",
+  "params": "1.7B",
+  "order": 30,
+  "description": "General chat model without a thinking mode.",
+  "source": {
+    "repo": "HuggingFaceTB/SmolLM2-1.7B-Instruct",
+    "url": "https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct",
+    "revisionObserved": "31b70e2e869a7173562077fd711b654946d38674",
+    "license": "apache-2.0",
+    "attribution": "SmolLM2 by Hugging Face (HuggingFaceTB). Licensed under the Apache License 2.0."
+  },
+  "artifact": {
+    "filename": "smollm2-1.7b-instruct-q4_k_m.gguf",
+    "repo": "HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF",
+    "revision": "2d4a76a30b4af41ecd395c35725ac11688d4cfe4",
+    "url": "https://huggingface.co/HuggingFaceTB/SmolLM2-1.7B-Instruct-GGUF/resolve/2d4a76a30b4af41ecd395c35725ac11688d4cfe4/smollm2-1.7b-instruct-q4_k_m.gguf",
+    "sizeBytes": 1055609536,
+    "sha256": "decd2598bc2c8ed08c19adc3c8fdd461ee19ed5708679d1c54ef54a5a30d4f33",
+    "quantization": "Q4_K_M",
+    "format": "GGUF",
+    "publishedBy": "HuggingFaceTB (the model's authors)",
+    "sha256Provenance": "Git LFS object ID published by Hugging Face at the pinned revision; recomputed after download on 2026-09-28."
+  },
+  "chatTemplate": {
+    "format": "embedded",
+    "source": "tokenizer.chat_template in the GGUF, rendered by llama.cpp (jinja)"
+  },
+  "capabilities": {
+    "thinking": "none"
+  },
+  "serving": {
+    "contextTokens": 8192,
+    "maxOutputTokens": 2048
+  },
+  "resources": {
+    "ramMB": 3700,
+    "tested": true,
+    "measured": {
+      "on": "AMD Ryzen 7 3700X, 4 threads, llama.cpp b11223, 8k context, 2026-09-28",
+      "loadMs": 3236,
+      "rssMB": 3319,
+      "decodeTokPerS": 24,
+      "promptTokPerS": 66,
+      "check": {
+        "question": "What is 17*23?",
+        "withoutThinking": "431",
+        "withThinking": null
+      }
+    }
+  }
+}

@@ -4,10 +4,11 @@ import { GatewaysView } from './components/GatewaysView';
 import { NetworkView, useSnapshot } from './components/NetworkView';
 import { TestsView } from './components/TestsView';
 import { PackView } from './components/PackView';
+import { ModelsView } from './components/ModelsView';
 import { Moon } from './components/Moon';
 import { uid, useChats, useGateways, usePersistent, type Message } from './store';
 
-type Tab = 'chat' | 'pack' | 'network' | 'tests' | 'gateways';
+type Tab = 'chat' | 'pack' | 'models' | 'network' | 'tests' | 'gateways';
 
 export function App() {
   const [gateways, setGateways] = useGateways();
@@ -57,6 +58,7 @@ export function App() {
             [
               ['chat', 'Chat'],
               ['pack', 'Pack'],
+              ['models', 'Models'],
               ['network', 'Network'],
               ['tests', 'Tests'],
               ['gateways', 'Gateways'],
@@ -77,7 +79,7 @@ export function App() {
           {snap && (
             <>
               {' '}
-              <span className={ready ? 'text-pine' : 'text-blood'}>{ready ? 'model ready' : 'model not ready'}</span>, {peersUp} peer{peersUp === 1 ? '' : 's'} can serve
+              <span className={ready ? 'text-pine' : 'text-blood'}>{ready ? 'model ready' : 'no model running here'}</span>, {peersUp} peer{peersUp === 1 ? '' : 's'} can serve
             </>
           )}
         </span>
@@ -148,6 +150,7 @@ export function App() {
           {tab === 'chat' && <ChatView chat={active} gateways={gateways} labels={labels} onUpdate={update} onCreate={create} />}
           {tab === 'network' && <NetworkView snap={snap} error={error} gateway={primary} />}
           {tab === 'pack' && <PackView gateways={gateways} />}
+          {tab === 'models' && <ModelsView gateways={gateways} />}
           {tab === 'tests' && <TestsView gateways={gateways} peers={snap?.peers ?? []} selfPeerId={snap?.status.peerId ?? null} labels={labels} />}
           {tab === 'gateways' && <GatewaysView gateways={gateways} setGateways={setGateways} />}
         </main>

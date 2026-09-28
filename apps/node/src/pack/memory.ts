@@ -216,7 +216,7 @@ export class PackMemory {
     try {
       const signal = AbortSignal.timeout(20_000);
       stream = await this.deps.libp2p.dialProtocol(peerIdFromString(peer), MEMORY_PROTOCOL, { signal, runOnLimitedConnection: true });
-      const fs = new FrameStream(stream);
+      const fs = new FrameStream(stream, undefined, 1);
       const mine = this.store.digests();
       await fs.write({ v: 1, type: 'digests', ...mine }, signal);
       const theirs = await fs.read(MemoryFrame, signal);
@@ -274,7 +274,7 @@ export class PackMemory {
       stream.abort(new Error('unauthorized'));
       return;
     }
-    const fs = new FrameStream(stream);
+    const fs = new FrameStream(stream, undefined, 1);
     const signal = AbortSignal.timeout(30_000);
     try {
       let frames = 0;

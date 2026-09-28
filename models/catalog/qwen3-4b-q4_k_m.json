@@ -1,0 +1,55 @@
+{
+  "manifestVersion": 1,
+  "id": "qwen3-4b-q4_k_m",
+  "displayName": "Qwen3 4B",
+  "family": "Qwen3",
+  "params": "4B",
+  "order": 80,
+  "description": "Stronger reasoning with thinking; slower on a CPU.",
+  "source": {
+    "repo": "Qwen/Qwen3-4B",
+    "url": "https://huggingface.co/Qwen/Qwen3-4B",
+    "revisionObserved": "1cfa9a7208912126459214e8b04321603b3df60c",
+    "license": "apache-2.0",
+    "attribution": "Qwen3 by the Qwen team, Alibaba Cloud. Licensed under the Apache License 2.0."
+  },
+  "artifact": {
+    "filename": "Qwen3-4B-Q4_K_M.gguf",
+    "repo": "Qwen/Qwen3-4B-GGUF",
+    "revision": "bc640142c66e1fdd12af0bd68f40445458f3869b",
+    "url": "https://huggingface.co/Qwen/Qwen3-4B-GGUF/resolve/bc640142c66e1fdd12af0bd68f40445458f3869b/Qwen3-4B-Q4_K_M.gguf",
+    "sizeBytes": 2497280256,
+    "sha256": "7485fe6f11af29433bc51cab58009521f205840f5b4ae3a32fa7f92e8534fdf5",
+    "quantization": "Q4_K_M",
+    "format": "GGUF",
+    "publishedBy": "Qwen (the model's authors)",
+    "sha256Provenance": "Git LFS object ID published by Hugging Face at the pinned revision; recomputed after download on 2026-09-28."
+  },
+  "chatTemplate": {
+    "format": "embedded",
+    "source": "tokenizer.chat_template in the GGUF, rendered by llama.cpp (jinja)"
+  },
+  "capabilities": {
+    "thinking": "toggle"
+  },
+  "serving": {
+    "contextTokens": 8192,
+    "maxOutputTokens": 2048
+  },
+  "resources": {
+    "ramMB": 6000,
+    "tested": true,
+    "measured": {
+      "on": "AMD Ryzen 7 3700X, 4 threads, llama.cpp b11223, 8k context, 2026-09-28",
+      "loadMs": 5296,
+      "rssMB": 5387,
+      "decodeTokPerS": 11,
+      "promptTokPerS": 33,
+      "check": {
+        "question": "What is 17*23?",
+        "withoutThinking": "17*23 = 391",
+        "withThinking": "(no answer within 1200 tokens)"
+      }
+    }
+  }
+}

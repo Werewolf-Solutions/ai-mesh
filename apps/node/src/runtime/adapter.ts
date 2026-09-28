@@ -1,7 +1,7 @@
 import type { ChatMessage, FinishReason, GenerationSettings, Usage } from '@werewolf-mesh/protocol';
 
 export type GenEvent =
-  | { type: 'token'; text: string }
+  | { type: 'token'; text: string; channel?: 'reasoning' }
   | { type: 'done'; finishReason: FinishReason; usage: Usage };
 
 export interface RuntimeStatus {

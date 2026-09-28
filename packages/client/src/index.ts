@@ -30,6 +30,9 @@ export interface MeshMeta {
   attempts: Array<{ workerPeerId: string; route: string; outcome: string }>;
   /** Worker-measured timings from the final chunk (absent on interrupted streams). */
   timings?: { queueMs: number; firstTokenMs: number; totalMs: number };
+  /** Model and effort the gateway used. */
+  model?: string;
+  effort?: string;
   /** Anonymous pack-memory notes the gateway gave the model as context. */
   packNotes?: Array<{ id: string; title: string; solution?: string; similarity: number }>;
 }
@@ -48,8 +51,8 @@ export interface GatewayAttempt {
 }
 
 export type ChatResult =
-  | { status: 'completed'; text: string; finishReason: string; usage?: ChatCompletionChunk['usage']; meta: MeshMeta; gatewayAttempts: GatewayAttempt[] }
-  | { status: 'interrupted'; text: string; error: { code: string; message: string }; meta: MeshMeta; gatewayAttempts: GatewayAttempt[] }
+  | { status: 'completed'; text: string; reasoning: string; finishReason: string; usage?: ChatCompletionChunk['usage']; meta: MeshMeta; gatewayAttempts: GatewayAttempt[] }
+  | { status: 'interrupted'; text: string; reasoning: string; error: { code: string; message: string }; meta: MeshMeta; gatewayAttempts: GatewayAttempt[] }
   | { status: 'cancelled'; text: string; meta: MeshMeta | null; gatewayAttempts: GatewayAttempt[] }
   | { status: 'failed'; text: ''; error: { code: string; message: string }; gatewayAttempts: GatewayAttempt[] };
 
@@ -59,6 +62,12 @@ export interface ChatOptions {
   temperature?: number;
   /** Mesh extension: 'auto' | 'local' | peer ID. */
   target?: string;
+  /** Catalog model ID (default: the gateway's default). */
+  model?: string;
+  /** OpenAI reasoning_effort: none = answer directly … high = think longest. */
+  effort?: 'none' | 'minimal' | 'low' | 'medium' | 'high';
+  /** Thinking text as it streams (models with a thinking mode). */
+  onReasoning?: (text: string, full: string) => void;
   /** Set false to stop the gateway adding pack-memory notes as context. */
   pack?: boolean;
   signal?: AbortSignal;
@@ -176,6 +185,8 @@ export class MeshClient {
             stream: true,
             ...(o.maxTokens ? { max_tokens: o.maxTokens } : {}),
             ...(o.temperature !== undefined ? { temperature: o.temperature } : {}),
+            ...(o.model ? { model: o.model } : {}),
+            ...(o.effort ? { reasoning_effort: o.effort } : {}),
             ...(o.target && o.target !== 'auto' ? { mesh: { target: o.target, ...(o.pack === false ? { pack: false } : {}) } } : o.pack === false ? { mesh: { pack: false } } : {}),
           }),
           signal: ctl.signal,
@@ -210,6 +221,7 @@ export class MeshClient {
 
   private async consume(body: ReadableStream<Uint8Array>, meta: MeshMeta, o: ChatOptions, ctl: AbortController): Promise<ChatResult> {
     let text = '';
+    let reasoning = '';
     let done = false;
     let finishReason: string | null = null;
     let usage: ChatCompletionChunk['usage'];
@@ -233,9 +245,17 @@ export class MeshClient {
       }
       if (j.mesh?.attempts) meta.attempts = j.mesh.attempts;
       if (j.mesh?.timings) meta.timings = j.mesh.timings;
+      const mm = j.mesh as { model?: string; effort?: string } | undefined;
+      if (mm?.model) meta.model = mm.model;
+      if (mm?.effort) meta.effort = mm.effort;
       const pn = (j.mesh as { packNotes?: MeshMeta['packNotes'] } | undefined)?.packNotes;
       if (pn) meta.packNotes = pn;
       const c = j.choices?.[0];
+      const rc = c?.delta?.reasoning_content;
+      if (rc) {
+        reasoning += rc;
+        o.onReasoning?.(rc, reasoning);
+      }
       const t = c?.delta?.content;
       if (t) {
         text += t;
@@ -270,11 +290,11 @@ export class MeshClient {
       reader.releaseLock?.();
     }
     if (o.signal?.aborted) return { status: 'cancelled', text, meta, gatewayAttempts: [] };
-    if (done && finishReason && !streamError) return { status: 'completed', text, finishReason, usage, meta, gatewayAttempts: [] };
+    if (done && finishReason && !streamError) return { status: 'completed', text, reasoning, finishReason, usage, meta, gatewayAttempts: [] };
     const err: { code: string; message: string } = streamError ?? (idleFired
       ? { code: 'stream_idle_timeout', message: `no data for ${this.idleTimeoutMs} ms` }
       : { code: 'interrupted', message: 'stream ended without a completion marker' });
-    return { status: 'interrupted', text, error: err, meta, gatewayAttempts: [] };
+    return { status: 'interrupted', text, reasoning, error: err, meta, gatewayAttempts: [] };
   }
 }
 

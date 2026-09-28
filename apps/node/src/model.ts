@@ -6,7 +6,7 @@
  */
 import { createHash } from 'node:crypto';
 import { createReadStream, createWriteStream } from 'node:fs';
-import { chmod, copyFile, mkdir, readFile, rename, stat, unlink } from 'node:fs/promises';
+import { chmod, copyFile, mkdir, open as openFile, readdir, readFile, rename, stat, unlink } from 'node:fs/promises';
 import { join } from 'node:path';
 import { Readable } from 'node:stream';
 import { pipeline } from 'node:stream/promises';
@@ -14,10 +14,15 @@ import { z } from 'zod';
 
 const Hex64 = z.string().regex(/^[0-9a-f]{64}$/);
 
+/** One entry of the model catalog (models/catalog/<id>.json). */
 export const ManifestSchema = z.object({
   manifestVersion: z.literal(1),
   id: z.string().regex(/^[a-z0-9._-]+$/),
   displayName: z.string(),
+  family: z.string().default(''),
+  params: z.string().default(''),
+  order: z.number().default(100),
+  description: z.string().default(''),
   source: z.object({ repo: z.string(), license: z.string(), attribution: z.string() }).passthrough(),
   artifact: z
     .object({
@@ -29,22 +34,48 @@ export const ManifestSchema = z.object({
     })
     .passthrough(),
   chatTemplate: z.object({ format: z.string() }).passthrough(),
-  serving: z.object({ contextTokens: z.number().int(), maxOutputTokens: z.number().int() }),
-  runtime: z
-    .object({
-      engine: z.literal('llama.cpp'),
-      release: z.string(),
-      buildInfo: z.string(),
-      image: z.string(),
-      binaries: z.record(z.string(), z.object({ url: z.string().url(), sha256: Hex64, dir: z.string(), tested: z.boolean() })),
-    })
-    .passthrough(),
+  capabilities: z.object({ thinking: z.enum(['none', 'toggle', 'always']) }).default({ thinking: 'none' }),
+  serving: z.object({ contextTokens: z.number().int().min(256).max(65536), maxOutputTokens: z.number().int().min(16).max(16384) }),
+  resources: z.object({ ramMB: z.number().int().positive(), tested: z.boolean() }).passthrough().default({ ramMB: 1024, tested: false }),
 });
 export type Manifest = z.infer<typeof ManifestSchema>;
+export type CatalogEntry = Manifest;
+
+/** The pinned llama.cpp build shared by every catalog model (models/runtime.json). */
+export const RuntimePinSchema = z
+  .object({
+    engine: z.literal('llama.cpp'),
+    release: z.string(),
+    buildInfo: z.string(),
+    image: z.string(),
+    binaries: z.record(z.string(), z.object({ url: z.string().url(), sha256: Hex64, dir: z.string(), tested: z.boolean() })),
+  })
+  .passthrough();
+export type RuntimePin = z.infer<typeof RuntimePinSchema>;
 
 export async function loadManifest(path: string): Promise<Manifest> {
   return ManifestSchema.parse(JSON.parse(await readFile(path, 'utf8')));
 }
+
+export async function loadRuntimePin(path: string): Promise<RuntimePin> {
+  return RuntimePinSchema.parse(JSON.parse(await readFile(path, 'utf8')));
+}
+
+/** All catalog entries, in display order. Invalid files are reported, not silently skipped. */
+export async function loadCatalog(dir: string): Promise<CatalogEntry[]> {
+  const files = (await readdir(dir)).filter((f) => f.endsWith('.json')).sort();
+  const out: CatalogEntry[] = [];
+  for (const f of files) {
+    const e = await loadManifest(join(dir, f)).catch((err) => {
+      throw new Error(`${join(dir, f)}: ${(err as Error).message}`);
+    });
+    if (`${e.id}.json` !== f) throw new Error(`${join(dir, f)}: id "${e.id}" must match the file name`);
+    out.push(e);
+  }
+  return out.sort((a, b) => a.order - b.order || a.id.localeCompare(b.id));
+}
+
+export const DEFAULT_MODEL_ID = 'smollm2-135m-instruct-q4_k_m';
 
 /**
  * Fingerprint shared on the wire. Peers must advertise an identical
@@ -88,41 +119,129 @@ export async function verifyModel(m: Manifest, dir: string): Promise<VerifyResul
 }
 
 /** Download a URL to `dest` via a .part file, verifying size and SHA-256 before the final rename. */
+/**
+ * Download a URL to `dest` via `dest.part`, verifying size and SHA-256 before
+ * the final rename.
+ *  - Resumable: an existing .part file is re-hashed and continued with an HTTP Range request.
+ *  - Cancellable with `signal` (the .part file is kept for a later resume).
+ *  - A `dest.lock` file (holding the PID) stops two processes sharing a models
+ *    directory from writing the same file at once.
+ */
 export async function downloadVerified(
   url: string,
   dest: string,
   expect: { sha256: string; sizeBytes?: number },
   onProgress?: (done: number, total: number | null) => void,
+  signal?: AbortSignal,
 ): Promise<void> {
   await mkdir(join(dest, '..'), { recursive: true });
   const part = `${dest}.part`;
-  const res = await fetch(url, { redirect: 'follow' });
+  const lock = `${dest}.lock`;
+  const lockFh = await acquireLock(lock);
+  try {
+    const hash = createHash('sha256');
+    let have = 0;
+    try {
+      const st = await stat(part);
+      if (expect.sizeBytes !== undefined && st.size > expect.sizeBytes) throw new Error('oversized partial file');
+      await pipeline(createReadStream(part), new (await import('node:stream')).Writable({
+        write(chunk: Buffer, _enc, cb) {
+          hash.update(chunk);
+          have += chunk.length;
+          cb();
+        },
+      }));
+    } catch {
+      await unlink(part).catch(() => undefined);
+      have = 0;
+    }
+    const res = await fetch(url, { redirect: 'follow', signal, headers: have > 0 ? { range: `bytes=${have}-` } : {} });
+    if (have > 0 && res.status !== 206) {
+      // Server ignored the range: start over.
+      await res.body?.cancel().catch(() => undefined);
+      await unlink(part).catch(() => undefined);
+      return await downloadVerifiedFresh(url, dest, expect, onProgress, signal);
+    }
+    if (!res.ok || !res.body) throw new Error(`download failed: HTTP ${res.status} for ${url}`);
+    const total = expect.sizeBytes ?? (Number(res.headers.get('content-length')) + have || null);
+    let done = have;
+    let lastReport = 0;
+    const body = Readable.fromWeb(res.body as import('node:stream/web').ReadableStream<Uint8Array>);
+    body.on('data', (chunk: Buffer) => {
+      hash.update(chunk);
+      done += chunk.length;
+      if (onProgress && Date.now() - lastReport > 500) {
+        lastReport = Date.now();
+        onProgress(done, total);
+      }
+    });
+    await pipeline(body, createWriteStream(part, { mode: 0o644, flags: have > 0 ? 'a' : 'w' }));
+    onProgress?.(done, total);
+    const sha = hash.digest('hex');
+    if (expect.sizeBytes !== undefined && done !== expect.sizeBytes) {
+      await unlink(part).catch(() => undefined);
+      throw new Error(`size mismatch: got ${done} bytes, expected ${expect.sizeBytes}`);
+    }
+    if (sha !== expect.sha256) {
+      await unlink(part).catch(() => undefined);
+      throw new Error(`SHA-256 mismatch: got ${sha}, expected ${expect.sha256}. File discarded.`);
+    }
+    await rename(part, dest);
+  } finally {
+    await lockFh.close().catch(() => undefined);
+    await unlink(lock).catch(() => undefined);
+  }
+}
+
+async function downloadVerifiedFresh(
+  url: string,
+  dest: string,
+  expect: { sha256: string; sizeBytes?: number },
+  onProgress?: (done: number, total: number | null) => void,
+  signal?: AbortSignal,
+): Promise<void> {
+  const part = `${dest}.part`;
+  const res = await fetch(url, { redirect: 'follow', signal });
   if (!res.ok || !res.body) throw new Error(`download failed: HTTP ${res.status} for ${url}`);
-  const total = Number(res.headers.get('content-length')) || expect.sizeBytes || null;
+  const total = expect.sizeBytes ?? (Number(res.headers.get('content-length')) || null);
   const hash = createHash('sha256');
   let done = 0;
-  let lastReport = 0;
   const body = Readable.fromWeb(res.body as import('node:stream/web').ReadableStream<Uint8Array>);
   body.on('data', (chunk: Buffer) => {
     hash.update(chunk);
     done += chunk.length;
-    if (onProgress && Date.now() - lastReport > 500) {
-      lastReport = Date.now();
-      onProgress(done, total);
-    }
+    onProgress?.(done, total);
   });
   await pipeline(body, createWriteStream(part, { mode: 0o644 }));
-  onProgress?.(done, total);
-  const sha = hash.digest('hex');
-  if (expect.sizeBytes !== undefined && done !== expect.sizeBytes) {
+  if ((expect.sizeBytes !== undefined && done !== expect.sizeBytes) || hash.digest('hex') !== expect.sha256) {
     await unlink(part).catch(() => undefined);
-    throw new Error(`size mismatch: got ${done} bytes, expected ${expect.sizeBytes}`);
-  }
-  if (sha !== expect.sha256) {
-    await unlink(part).catch(() => undefined);
-    throw new Error(`SHA-256 mismatch: got ${sha}, expected ${expect.sha256}. File discarded.`);
+    throw new Error('downloaded file failed verification; discarded');
   }
   await rename(part, dest);
+}
+
+async function acquireLock(lock: string) {
+  try {
+    const fh = await openFile(lock, 'wx', 0o644);
+    await fh.writeFile(String(process.pid));
+    return fh;
+  } catch {
+    const pid = Number(await readFile(lock, 'utf8').catch(() => '0'));
+    let alive = false;
+    try {
+      if (pid > 0) {
+        process.kill(pid, 0);
+        alive = true;
+      }
+    } catch {
+      /* stale lock */
+    }
+    if (alive) throw new Error(`another process (pid ${pid}) is already downloading this file`);
+    await unlink(lock).catch(() => undefined);
+    const fh = await openFile(lock, 'wx', 0o644);
+    await fh.writeFile(String(process.pid));
+    return fh;
+  }
 }
 
 /** Copy an existing local GGUF into the model directory, then verify it. Never contacts the network. */

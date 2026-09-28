@@ -1,0 +1,55 @@
+{
+  "manifestVersion": 1,
+  "id": "qwen3-1.7b-q8_0",
+  "displayName": "Qwen3 1.7B",
+  "family": "Qwen3",
+  "params": "1.7B",
+  "order": 40,
+  "description": "Good all-rounder for its size, with an optional thinking mode.",
+  "source": {
+    "repo": "Qwen/Qwen3-1.7B",
+    "url": "https://huggingface.co/Qwen/Qwen3-1.7B",
+    "revisionObserved": "70d244cc86ccca08cf5af4e1e306ecf908b1ad5e",
+    "license": "apache-2.0",
+    "attribution": "Qwen3 by the Qwen team, Alibaba Cloud. Licensed under the Apache License 2.0."
+  },
+  "artifact": {
+    "filename": "Qwen3-1.7B-Q8_0.gguf",
+    "repo": "Qwen/Qwen3-1.7B-GGUF",
+    "revision": "90862c4b9d2787eaed51d12237eafdfe7c5f6077",
+    "url": "https://huggingface.co/Qwen/Qwen3-1.7B-GGUF/resolve/90862c4b9d2787eaed51d12237eafdfe7c5f6077/Qwen3-1.7B-Q8_0.gguf",
+    "sizeBytes": 1834426016,
+    "sha256": "061b54daade076b5d3362dac252678d17da8c68f07560be70818cace6590cb1a",
+    "quantization": "Q8_0",
+    "format": "GGUF",
+    "publishedBy": "Qwen (the model's authors)",
+    "sha256Provenance": "Git LFS object ID published by Hugging Face at the pinned revision; recomputed after download on 2026-09-28."
+  },
+  "chatTemplate": {
+    "format": "embedded",
+    "source": "tokenizer.chat_template in the GGUF, rendered by llama.cpp (jinja)"
+  },
+  "capabilities": {
+    "thinking": "toggle"
+  },
+  "serving": {
+    "contextTokens": 8192,
+    "maxOutputTokens": 2048
+  },
+  "resources": {
+    "ramMB": 3200,
+    "tested": true,
+    "measured": {
+      "on": "AMD Ryzen 7 3700X, 4 threads, llama.cpp b11223, 8k context, 2026-09-28",
+      "loadMs": 4049,
+      "rssMB": 2830,
+      "decodeTokPerS": 14,
+      "promptTokPerS": 71,
+      "check": {
+        "question": "What is 17*23?",
+        "withoutThinking": "391",
+        "withThinking": "391"
+      }
+    }
+  }
+}

@@ -54,7 +54,7 @@ describe('admission & protocol robustness', () => {
   let impostor: Libp2p; // holds node3's (authorised) key; node3 itself is never started
   let n1Addr: ReturnType<typeof multiaddr>;
   const validReq = (over: object = {}) => ({
-    v: 1,
+    v: 2,
     type: 'infer',
     requestId: `r-${Math.random().toString(36).slice(2)}`,
     attemptId: 'a1',
@@ -139,10 +139,11 @@ describe('admission & protocol robustness', () => {
 
   it.each([
     ['malformed JSON', () => new TextEncoder().encode('{"v":1,"type":"infer",')],
-    ['wrong protocol version', () => enc({ ...validReq(), v: 2 })],
+    ['wrong protocol version', () => enc({ ...validReq(), v: 1 })],
     ['unknown field', () => enc({ ...validReq(), shell: 'rm -rf /' })],
     ['too many messages', () => enc(validReq({ messages: Array.from({ length: 65 }, () => ({ role: 'user', content: 'x' })) }))],
     ['max tokens above limit', () => enc(validReq({ settings: { maxTokens: 100000 } }))],
+    ['invalid thinking mode', () => enc(validReq({ settings: { maxTokens: 8, thinking: { mode: 'always' } } }))],
     ['tool role message', () => enc(validReq({ messages: [{ role: 'tool', content: 'x' }] }))],
   ])('drops the stream on %s without executing', async (_name, payload) => {
     const before = (await admin(n1, '/admin/metrics')).counters.worker_jobs_started ?? 0;
@@ -201,11 +202,12 @@ describe('admission & protocol robustness', () => {
     const status = (peerId: string) => ({
       peerId,
       networkId: 'test-net',
-      protocolVersion: 1,
+      protocolVersion: 2,
       softwareVersion: 'x',
       state: 'ready',
       inferenceReady: true,
       models: [FAKE_FINGERPRINT],
+      modelLoad: [{ model: FAKE_FINGERPRINT, ready: true, active: 0, queued: 0, maxConcurrency: 1, maxQueue: 8 }],
       activeJobs: 0,
       queueLength: 0,
       maxConcurrency: 1,
@@ -215,13 +217,13 @@ describe('admission & protocol robustness', () => {
     });
     // 1) Claim to be node2 → rejected, node2's entry unaffected.
     let s = await impostor.dialProtocol(n1Addr, STATUS_PROTOCOL);
-    await lpStream(s).write(enc({ v: 1, type: 'status', status: status(n2.peerId), hints: [] }));
+    await lpStream(s).write(enc({ v: 2, type: 'status', status: status(n2.peerId), hints: [] }));
     expect(await readAll(s, 1000)).toEqual([]);
     // 2) Honest status + hints: one for an unauthorised peer, one bogus address for node2.
     s = await impostor.dialProtocol(n1Addr, STATUS_PROTOCOL);
     await lpStream(s).write(
       enc({
-        v: 1,
+        v: 2,
         type: 'status',
         status: status(n3.peerId),
         hints: [

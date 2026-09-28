@@ -30,6 +30,12 @@ export const GenerationSettings = z.strictObject({
   stop: z.array(z.string().min(1).max(LIMITS.maxStopChars)).max(LIMITS.maxStop).optional(),
   presencePenalty: z.number().min(-2).max(2).optional(),
   frequencyPenalty: z.number().min(-2).max(2).optional(),
+  /**
+   * Thinking (reasoning before answering), for models that support it.
+   * off: answer directly. on: think first, ending thinking after `budget` tokens.
+   * `maxTokens` limits the ANSWER; thinking tokens come on top, up to `budget`.
+   */
+  thinking: z.strictObject({ mode: z.enum(['off', 'on']), budget: z.number().int().min(0).max(LIMITS.maxThinkingTokens).optional() }).optional(),
 });
 export type GenerationSettings = z.infer<typeof GenerationSettings>;
 
@@ -56,6 +62,19 @@ export const StatusRecord = z.strictObject({
   queueLength: z.number().int().min(0).max(1024),
   maxConcurrency: z.number().int().min(0).max(1024),
   maxQueue: z.number().int().min(0).max(1024),
+  /** Per hosted model: readiness and load (the totals above are sums). */
+  modelLoad: z
+    .array(
+      z.strictObject({
+        model: fingerprint,
+        ready: z.boolean(),
+        active: z.number().int().min(0).max(1024),
+        queued: z.number().int().min(0).max(1024),
+        maxConcurrency: z.number().int().min(0).max(1024),
+        maxQueue: z.number().int().min(0).max(1024),
+      }),
+    )
+    .max(LIMITS.maxModelFingerprints),
   /** The sender's own advertised addresses (authoritative only for the sender itself). */
   addrs: z.array(multiaddrStr).max(LIMITS.maxAddrsPerPeer),
   /** Sender's clock, informational only; freshness uses the receiver's clock. */
@@ -140,6 +159,8 @@ export const WorkerFrame = z.discriminatedUnion('type', [
     type: z.literal('token'),
     seq: z.number().int().min(0),
     text: z.string().max(LIMITS.maxTokenTextChars),
+    /** 'reasoning' for thinking text, absent for the answer. */
+    channel: z.literal('reasoning').optional(),
   }),
   z.strictObject({
     v: version,

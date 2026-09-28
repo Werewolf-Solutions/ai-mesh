@@ -67,12 +67,24 @@ export const NodeConfigSchema = z.strictObject({
       startupTimeoutMs: ms(120_000),
       /** Fake runtime only: per-token delay. */
       fakeTokenDelayMs: z.number().int().min(0).max(10_000).default(20),
+      /** Fake runtime only: the fake model IDs this node hosts (IDs ending in "-think" support thinking). */
+      fakeModels: z.array(z.string().regex(/^[a-z0-9._-]+$/)).max(8).default(['fake-test-model']),
     })
     .prefault({}),
   model: z
     .strictObject({
-      manifest: z.string().default(join(REPO_ROOT, 'models/manifest.json')),
+      /** Where model files live (shared between nodes on one machine is fine). */
       dir: z.string().default(join(REPO_ROOT, 'models')),
+      /** The vetted model catalog: one pinned manifest per model. */
+      catalog: z.string().default(join(REPO_ROOT, 'models/catalog')),
+      /** The pinned llama.cpp build all catalog models are tested with. */
+      runtimePin: z.string().default(join(REPO_ROOT, 'models/runtime.json')),
+      /** Catalog IDs this node hosts at start (until changed from the UI/CLI, see models-state.json). */
+      host: z.array(z.string().regex(/^[a-z0-9._-]+$/)).max(16).default(['smollm2-135m-instruct-q4_k_m']),
+      /** Allow the node's operator (admin token / loopback) to download and host catalog models from the UI. */
+      allowInstall: z.boolean().default(true),
+      /** @deprecated v0.1 single-model manifest path; ignored. */
+      manifest: z.string().optional(),
     })
     .prefault({}),
   worker: z
@@ -194,7 +206,7 @@ function applyEnv(raw: Record<string, any>): Record<string, any> {
   if (env.MESH_RUNTIME_BINARY) set(['runtime', 'binary'], env.MESH_RUNTIME_BINARY);
   if (env.MESH_THREADS) set(['runtime', 'threads'], Number(env.MESH_THREADS));
   if (env.MESH_MODEL_DIR) set(['model', 'dir'], env.MESH_MODEL_DIR);
-  if (env.MESH_MODEL_MANIFEST) set(['model', 'manifest'], env.MESH_MODEL_MANIFEST);
+  if (env.MESH_MODEL_CATALOG) set(['model', 'catalog'], env.MESH_MODEL_CATALOG);
   return raw;
 }
 

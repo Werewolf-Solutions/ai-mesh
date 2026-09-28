@@ -33,6 +33,8 @@ import type { Logger } from '../util/log.js';
 import type { TokenChecker } from '../secrets.js';
 import type { ScoreResult } from '../scoring/scorer.js';
 import type { PackMemory } from '../pack/memory.js';
+import type { ModelManager } from '../models/manager.js';
+import { planGeneration } from '../models/effort.js';
 import { NoteKind, PACK_LIMITS, scrub } from '@werewolf-mesh/protocol';
 import { z } from 'zod';
 
@@ -57,9 +59,10 @@ export interface HttpDeps {
   tokens: TokenChecker;
   gateway: Gateway;
   selfPeerId: string;
-  modelId: string;
-  fingerprint: string;
   runtimeKind: 'llama.cpp' | 'fake';
+  models: ModelManager;
+  /** Reachable peers serving a fingerprint (local, partial view). */
+  servedBy: (fingerprint: string) => number;
   ready: () => ReadyBody;
   status: () => NodeStatusView;
   peers: () => unknown;
@@ -173,18 +176,49 @@ export async function buildHttpServer(deps: HttpDeps): Promise<FastifyInstance> 
   });
 
   // ------------------------------------------------------------------ OpenAI subset
-  app.get('/v1/models', { preHandler: requireRole('client') }, async () => ({
-    object: 'list',
-    data: [
-      {
-        id: deps.modelId,
-        object: 'model',
-        created: 0,
-        owned_by: 'werewolf-mesh',
-        mesh: { fingerprint: deps.fingerprint, runtime: deps.runtimeKind, execution: 'replicated (each node holds a full copy)' },
-      },
-    ],
-  }));
+  /**
+   * Models. Default: only models some reachable node is serving (what an
+   * OpenAI client can actually use). `?all=1`: the whole vetted catalog with
+   * availability, and — for this node's operator — local install state.
+   */
+  app.get('/v1/models', { preHandler: requireRole('client') }, async (req) => {
+    const all = (req.query as { all?: string }).all === '1';
+    const views = await deps.models.views(deps.servedBy, roleOf(req) === 'admin');
+    return {
+      object: 'list',
+      data: views
+        .filter((v) => all || v.available.nodes > 0)
+        .map((v) => ({ id: v.id, object: 'model', created: 0, owned_by: 'werewolf-mesh', mesh: { ...v, runtime: deps.runtimeKind, execution: 'replicated (every serving node holds a full copy)' } })),
+    };
+  });
+
+  // ------------------------------------------------------------------ model management (this node's operator only)
+  app.get('/admin/models', { preHandler: requireRole('admin') }, async () => ({ models: await deps.models.views(deps.servedBy, true) }));
+  app.post('/admin/models/:id/install', { preHandler: requireRole('admin') }, async (req, reply) => {
+    const id = (req.params as { id: string }).id;
+    try {
+      await deps.models.install(id);
+      return { accepted: true };
+    } catch (err) {
+      return sendError(reply, err instanceof MeshError ? err : new MeshError('internal', (err as Error).message));
+    }
+  });
+  app.post('/admin/models/:id/cancel', { preHandler: requireRole('admin') }, async (req) => {
+    deps.models.cancelInstall((req.params as { id: string }).id);
+    return { ok: true };
+  });
+  app.post('/admin/models/:id/unhost', { preHandler: requireRole('admin') }, async (req) => {
+    await deps.models.unhost((req.params as { id: string }).id);
+    return { ok: true };
+  });
+  app.delete('/admin/models/:id', { preHandler: requireRole('admin') }, async (req, reply) => {
+    try {
+      await deps.models.remove((req.params as { id: string }).id);
+      return { ok: true };
+    } catch (err) {
+      return sendError(reply, err instanceof MeshError ? err : new MeshError('internal', (err as Error).message));
+    }
+  });
 
   app.post('/v1/chat/completions', { preHandler: requireRole('client') }, async (req, reply) => {
     const body = req.body as Record<string, unknown> | null;
@@ -201,12 +235,16 @@ export async function buildHttpServer(deps: HttpDeps): Promise<FastifyInstance> 
       return sendError(reply, new MeshError('bad_request', `invalid request: ${i?.path.join('.') || '(body)'}: ${i?.message}`.slice(0, 300)));
     }
     const r = parsed.data;
-    if (r.model && r.model !== deps.modelId && r.model !== deps.fingerprint) {
-      return sendError(reply, new MeshError('bad_request', `model "${r.model}" is not served; use "${deps.modelId}"`));
+    const entry = r.model ? deps.models.resolve(r.model) : deps.models.defaultModel(deps.servedBy);
+    if (!entry) {
+      return sendError(reply, new MeshError('bad_request', `model "${r.model}" is not in the catalog; see GET /v1/models?all=1`));
     }
-    const maxTokens = r.max_completion_tokens ?? r.max_tokens ?? LIMITS.maxOutputTokens;
-    if (maxTokens > LIMITS.maxOutputTokens) {
-      return sendError(reply, new MeshError('bad_request', `max_tokens must be <= ${LIMITS.maxOutputTokens} in v0.1`));
+    const fp = deps.models.fingerprintOf(entry);
+    let plan;
+    try {
+      plan = planGeneration(entry, r.reasoning_effort, r.max_completion_tokens ?? r.max_tokens);
+    } catch (err) {
+      return sendError(reply, err as MeshError);
     }
     const totalChars = r.messages.reduce((n, m) => n + m.content.length, 0);
     if (totalChars > LIMITS.maxTotalChars) {
@@ -216,7 +254,8 @@ export async function buildHttpServer(deps: HttpDeps): Promise<FastifyInstance> 
     const target = r.mesh?.target ?? 'auto';
     const prefer = (req.headers['x-mesh-prefer'] as string | undefined)?.slice(0, 128);
     const settings = {
-      maxTokens,
+      maxTokens: plan.maxTokens,
+      ...(plan.thinking ? { thinking: plan.thinking } : {}),
       temperature: r.temperature,
       topP: r.top_p,
       seed: r.seed,
@@ -250,29 +289,35 @@ export async function buildHttpServer(deps: HttpDeps): Promise<FastifyInstance> 
         messages = [{ role: 'system' as const, content: system }, ...r.messages.filter((m) => m.role !== 'system')];
       }
     }
-    const gen = deps.gateway.execute({ messages, settings, deadlineMs, target, ...(prefer ? { prefer } : {}) }, ctl.signal);
+    const gen = deps.gateway.execute({ model: fp, messages, settings, deadlineMs, target, ...(prefer ? { prefer } : {}) }, ctl.signal);
     const meshInfo = (worker: string | null, route: 'local' | 'remote' | null, attempts: AttemptRecord[]) => ({
       gatewayPeerId: deps.selfPeerId,
       workerPeerId: worker,
       route,
       attempts,
       runtime: deps.runtimeKind,
+      model: entry.id,
+      effort: plan.effort,
       ...(packNotes.length ? { packNotes } : {}),
     });
 
     if (!r.stream) {
       let text = '';
+      let reasoning = '';
       try {
         for await (const ev of gen) {
-          if (ev.type === 'first_token' || ev.type === 'token') text += ev.text;
+          if (ev.type === 'first_token' || ev.type === 'token') {
+            if (ev.channel === 'reasoning') reasoning += ev.text;
+            else text += ev.text;
+          }
           else {
             reply.header('x-mesh-worker', ev.workerPeerId).header('x-mesh-gateway', deps.selfPeerId).header('x-mesh-route', ev.route).header('x-mesh-runtime', deps.runtimeKind);
             return reply.send({
               id,
               object: 'chat.completion',
               created,
-              model: deps.modelId,
-              choices: [{ index: 0, message: { role: 'assistant', content: text }, finish_reason: ev.finishReason }],
+              model: entry.id,
+              choices: [{ index: 0, message: { role: 'assistant', content: text, ...(reasoning ? { reasoning_content: reasoning } : {}) }, finish_reason: ev.finishReason }],
               usage: { prompt_tokens: ev.usage.promptTokens, completion_tokens: ev.usage.completionTokens, total_tokens: ev.usage.promptTokens + ev.usage.completionTokens },
               mesh: { ...meshInfo(ev.workerPeerId, ev.route, ev.attempts), ...(ev.timings ? { timings: ev.timings } : {}) },
             });
@@ -312,7 +357,7 @@ export async function buildHttpServer(deps: HttpDeps): Promise<FastifyInstance> 
       id,
       object: 'chat.completion.chunk',
       created,
-      model: deps.modelId,
+      model: entry.id,
       choices: [{ index: 0, delta, finish_reason: finish }],
       ...extra,
     });
@@ -332,9 +377,9 @@ export async function buildHttpServer(deps: HttpDeps): Promise<FastifyInstance> 
             ...corsHeaders(req, allowedOrigins),
           });
           headersSent = true;
-          await write(chunk({ role: 'assistant', content: ev.text }, null, { mesh: meshInfo(ev.workerPeerId, ev.route, ev.attempts) }));
+          await write(chunk({ role: 'assistant', ...(ev.channel === 'reasoning' ? { reasoning_content: ev.text } : { content: ev.text }) }, null, { mesh: meshInfo(ev.workerPeerId, ev.route, ev.attempts) }));
         } else if (ev.type === 'token') {
-          await write(chunk({ content: ev.text }, null));
+          await write(chunk(ev.channel === 'reasoning' ? { reasoning_content: ev.text } : { content: ev.text }, null));
         } else {
           await write(
             chunk({}, ev.finishReason, {
