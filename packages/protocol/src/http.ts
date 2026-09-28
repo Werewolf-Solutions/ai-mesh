@@ -53,6 +53,8 @@ export const ChatCompletionRequest = z.strictObject({
       target: MeshTarget.optional(),
       /** Total time budget in ms (default and cap come from gateway config). */
       timeout_ms: z.number().int().min(1000).max(15 * 60_000).optional(),
+      /** Use pack-memory notes as context (default true when the gateway has pack memory). */
+      pack: z.boolean().optional(),
     })
     .optional(),
 });

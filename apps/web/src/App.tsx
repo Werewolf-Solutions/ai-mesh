@@ -3,10 +3,11 @@ import { ChatView } from './components/ChatView';
 import { GatewaysView } from './components/GatewaysView';
 import { NetworkView, useSnapshot } from './components/NetworkView';
 import { TestsView } from './components/TestsView';
+import { PackView } from './components/PackView';
 import { Moon } from './components/Moon';
 import { uid, useChats, useGateways, usePersistent, type Message } from './store';
 
-type Tab = 'chat' | 'network' | 'tests' | 'gateways';
+type Tab = 'chat' | 'pack' | 'network' | 'tests' | 'gateways';
 
 export function App() {
   const [gateways, setGateways] = useGateways();
@@ -55,6 +56,7 @@ export function App() {
           {(
             [
               ['chat', 'Chat'],
+              ['pack', 'Pack'],
               ['network', 'Network'],
               ['tests', 'Tests'],
               ['gateways', 'Gateways'],
@@ -145,6 +147,7 @@ export function App() {
         <main className="min-h-0">
           {tab === 'chat' && <ChatView chat={active} gateways={gateways} labels={labels} onUpdate={update} onCreate={create} />}
           {tab === 'network' && <NetworkView snap={snap} error={error} gateway={primary} />}
+          {tab === 'pack' && <PackView gateways={gateways} />}
           {tab === 'tests' && <TestsView gateways={gateways} peers={snap?.peers ?? []} selfPeerId={snap?.status.peerId ?? null} labels={labels} />}
           {tab === 'gateways' && <GatewaysView gateways={gateways} setGateways={setGateways} />}
         </main>

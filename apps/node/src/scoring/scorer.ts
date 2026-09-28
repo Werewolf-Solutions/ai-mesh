@@ -155,7 +155,13 @@ export class Scorer {
     c?.kill('SIGTERM');
   }
 
-  private async embed(texts: string[]): Promise<number[][]> {
+  get ready(): boolean {
+    return this.state === 'ready';
+  }
+
+  /** Sentence embeddings (also used by pack memory). Texts are truncated to fit the 512-token window. */
+  async embed(texts: string[]): Promise<number[][]> {
+    texts = texts.map((t) => (t.length > 1500 ? t.slice(0, 1500) : t) || ' ');
     const r = await fetch(`${this.baseUrl}/v1/embeddings`, {
       method: 'POST',
       headers: { 'content-type': 'application/json', authorization: `Bearer ${this.apiKey}` },

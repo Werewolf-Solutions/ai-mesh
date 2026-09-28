@@ -44,7 +44,16 @@ The goal is to serve models too big for any single community machine.
 - Local, non-transferable counters of work served to and received from each peer, for fairness in routing ("serve those who serve").
 - Explicitly **no** tokens, blockchain, staking or payments. Any shared accounting must survive operators lying about their own numbers, so it would rely on the counterpart's measurements.
 
-## 7. Smaller items
+## 7. Pack memory, next steps
+
+Shipped in v0.1: anonymous notes, pull replication, merging, local reinforcement, retrieval. See [pack-memory.md](pack-memory.md). Next:
+
+- Pack-wide (not only local) reinforcement that cannot be gamed or used to track people, e.g. aggregated with differential-privacy noise.
+- Moderation that works despite anonymity: operator-signed "hide" recommendations that other operators may choose to follow.
+- Better distillation of an answer into a how-to, once a larger model is available.
+- Stronger origin hiding (mixing / cover traffic) for meshes that need it.
+
+## 8. Smaller items
 
 - DCUtR hole punching for direct home-to-home connections.
 - Prometheus-format metrics export.

@@ -26,6 +26,7 @@ import type { InferenceAdapter } from './runtime/adapter.js';
 import { FakeAdapter, FAKE_FINGERPRINT } from './runtime/fake.js';
 import { LlamaCppAdapter } from './runtime/llamacpp.js';
 import { Scorer } from './scoring/scorer.js';
+import { PackMemory } from './pack/memory.js';
 import { loadSecrets, TokenChecker } from './secrets.js';
 import { createLogger, type Logger } from './util/log.js';
 import { SOFTWARE_VERSION } from './version.js';
@@ -47,6 +48,7 @@ export class MeshNode {
   gateway!: Gateway;
   http!: FastifyInstance;
   scorer!: Scorer;
+  pack!: PackMemory;
   readonly metrics = new Metrics();
   private startedAt = Date.now();
   private state: 'starting' | 'ready' | 'not_ready' | 'draining' = 'starting';
@@ -149,6 +151,17 @@ export class MeshNode {
       log: this.log.child({ component: 'scorer' }),
     });
 
+    this.pack = new PackMemory({
+      cfg: this.cfg.pack,
+      dataDir: this.dataDir,
+      libp2p: this.libp2p,
+      admission: this.admission,
+      peers: this.peers,
+      scorer: this.scorer,
+      metrics: this.metrics,
+      log: this.log.child({ component: 'pack' }),
+    });
+
     // ---- HTTP first, so liveness works while the model loads.
     const secrets = await loadSecrets(this.dataDir);
     this.http = await buildHttpServer({
@@ -168,6 +181,7 @@ export class MeshNode {
       reloadAdmission: () => this.admission.load(),
       score: (reference, candidates) => this.scorer.score(reference, candidates),
       scorerStatus: () => this.scorer.status(),
+      pack: this.cfg.pack.enabled ? this.pack : null,
     });
     await this.http.listen({ host: this.cfg.http.host, port: this.cfg.http.port });
 
@@ -183,6 +197,7 @@ export class MeshNode {
       log: this.log.child({ component: 'infer' }),
     }).register(this.libp2p);
     await this.peers.start();
+    if (this.cfg.pack.enabled) await this.pack.start();
     this.admission.watch(this.cfg.discovery.admissionReloadMs, (err) => this.log.error({ err: (err as Error).message }, 'admission reload failed; keeping previous list'));
 
     this.log.info(
@@ -197,7 +212,9 @@ export class MeshNode {
     );
 
     // ---- model (after networking, so the node can gateway to peers while loading)
-    void this.loadModel(fake).then(() => this.scorer.start());
+    void this.loadModel(fake)
+      .then(() => this.scorer.start())
+      .then(() => this.pack.reindex());
   }
 
   private async loadModel(fake: boolean): Promise<void> {
@@ -339,6 +356,7 @@ export class MeshNode {
         }
       }
       this.admission?.stop();
+      await this.pack?.stop().catch(() => undefined);
       await this.peers?.stop().catch(() => undefined);
       await this.http?.close().catch(() => undefined);
       await Promise.resolve(this.libp2p?.stop()).catch(() => undefined);

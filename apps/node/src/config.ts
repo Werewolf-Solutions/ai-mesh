@@ -133,6 +133,29 @@ export const NodeConfigSchema = z.strictObject({
       threads: z.number().int().min(1).max(64).default(1),
     })
     .prefault({}),
+  /**
+   * Pack memory: anonymous shared problem → solution notes, replicated to every
+   * node by pull-based sync. Retrieval needs the scorer's embedding model.
+   */
+  pack: z
+    .strictObject({
+      enabled: z.boolean().default(true),
+      syncIntervalMs: ms(30_000, 50),
+      /** A note created here becomes pullable after a random delay in this range (hides which node published it). */
+      publishDelayMinMs: z.number().int().min(0).max(3_600_000).default(30_000),
+      publishDelayMaxMs: z.number().int().min(0).max(3_600_000).default(300_000),
+      /** Cosine similarity at or above which two notes count as the same problem. */
+      groupSimilarity: z.number().min(0).max(1).default(0.9),
+      retrieval: z
+        .strictObject({
+          enabled: z.boolean().default(true),
+          maxNotes: z.number().int().min(0).max(5).default(2),
+          minSimilarity: z.number().min(0).max(1).default(0.72),
+          maxNoteChars: z.number().int().min(100).max(2000).default(600),
+        })
+        .prefault({}),
+    })
+    .prefault({}),
 });
 
 export type NodeConfig = z.infer<typeof NodeConfigSchema>;

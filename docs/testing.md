@@ -6,9 +6,9 @@ Environment: Ubuntu 24.04 x86-64, Ryzen 7 3700X, 16 GB RAM, Docker 29.8.1 / Comp
 
 | Command | Runtime | Result |
 |---|---|---|
-| `pnpm test:unit` | none | **18/18 passed** |
-| `pnpm test:integration` | **FAKE deterministic adapter**, real separate OS processes, real libp2p | **42/42 passed** |
-| `pnpm test:real` | **real llama.cpp b11223 + verified model** | **9/9 passed**, including meaning-match scoring with the real embedding model (the one "skipped" entry is the placeholder that only runs when the model is missing) |
+| `pnpm test:unit` | none | **22/22 passed** |
+| `pnpm test:integration` | **FAKE deterministic adapter**, real separate OS processes, real libp2p | **48/48 passed** |
+| `pnpm test:real` | **real llama.cpp b11223 + verified model** | **10/10 passed**, including meaning-match scoring and pack-memory retrieval with the real embedding model (the one "skipped" entry is the placeholder that only runs when the model is missing) |
 
 The fake adapter emits placeholder tokens (`t0 t1 …`) and supports fault directives such as `[[fake:crash_after=3]]`. Its guard rails:
 

@@ -20,6 +20,7 @@ export const FAST_TIMINGS = {
   shutdown: { graceMs: 2000 },
   // The embedding scorer is exercised in its own tests; keep fault-injection clusters light.
   scorer: { enabled: false },
+  pack: { syncIntervalMs: 300, publishDelayMinMs: 0, publishDelayMaxMs: 0 },
 };
 
 export interface TestNode extends ClusterNode {

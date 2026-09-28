@@ -190,6 +190,7 @@ function ReadingTest({ gateways, peers, selfPeerId, labels }: Props) {
       maxTokens: 48,
       temperature: 0,
       target,
+      pack: false, // keep the reading test comparable: no pack notes as extra context
       signal,
       onMeta: (m) => {
         worker = m.workerPeerId;

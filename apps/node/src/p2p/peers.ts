@@ -236,6 +236,11 @@ export class PeerManager {
     e.lastError = err.slice(0, 200);
   }
 
+  /** Authorised peers with an open connection (regardless of model readiness). */
+  connectedPeers(): string[] {
+    return [...this.peers.keys()].filter((id) => this.isConnected(id));
+  }
+
   get trackedCount(): number {
     return this.peers.size;
   }

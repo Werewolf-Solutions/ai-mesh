@@ -177,6 +177,35 @@ describe.skipIf(!haveReal)('real llama.cpp model', () => {
     expect(r.semantic.cosine[1]).toBeLessThan(r.semantic.unrelatedBaseline + 0.15);
   });
 
+  it('pack memory: a note shared on one node is found by meaning on another and used in the answer', async () => {
+    if (!existsSync(join(ROOT, 'models/bge-small-en-v1.5-q8_0.gguf'))) return; // optional model not installed
+    const share = await fetch(`${n2.url}/v1/pack/notes`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({
+        kind: 'solution',
+        title: 'Docker says permission denied without sudo',
+        problem: 'Running docker commands fails with permission denied on the Docker daemon socket unless I use sudo.',
+        solution: 'Add your user to the docker group with: sudo usermod -aG docker $USER. Then log out and back in so the new group applies.',
+        tags: ['docker'],
+        withdrawHash: 'b'.repeat(64),
+      }),
+    });
+    const { id } = (await share.json()) as { id: string };
+    // replicated to node3 and indexed by its embedding model
+    await waitFor(async () => {
+      const r = await (await fetch(`${n3.url}/v1/pack/notes?q=${encodeURIComponent('docker permission denied')}`)).json();
+      return r.semantic && r.notes.some((v: any) => v.note.id === id);
+    }, 30_000, 'note replicated and indexed on node3');
+    const q = 'docker keeps saying permission denied unless I run it with sudo, how do I fix that?';
+    const withPack = await chat(n3, q, { stream: false, maxTokens: 80, extra: { temperature: 0 } });
+    expect(withPack.body.mesh.packNotes.map((n: any) => n.id)).toContain(id);
+    expect(withPack.text).toMatch(/usermod/);
+    const unrelated = await chat(n3, 'What is the capital of France?', { stream: false, maxTokens: 16, extra: { temperature: 0 } });
+    expect(unrelated.body.mesh.packNotes).toBeUndefined();
+    measurements.packRetrieval = { withPack: withPack.text.slice(0, 160), similarity: withPack.body.mesh.packNotes[0].similarity };
+  });
+
   it('6. after stopping the bootstrap node, survivors still serve new requests', async () => {
     await waitAvailable(n3, [n2], 30_000);
     await stopNode(n1);

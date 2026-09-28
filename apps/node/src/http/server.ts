@@ -32,7 +32,18 @@ import { GatewayError, type AttemptRecord, type Gateway } from '../gateway/gatew
 import type { Logger } from '../util/log.js';
 import type { TokenChecker } from '../secrets.js';
 import type { ScoreResult } from '../scoring/scorer.js';
+import type { PackMemory } from '../pack/memory.js';
+import { NoteKind, PACK_LIMITS, scrub } from '@werewolf-mesh/protocol';
 import { z } from 'zod';
+
+const ShareRequest = z.strictObject({
+  kind: NoteKind,
+  title: z.string().min(3).max(400),
+  problem: z.string().max(3000),
+  solution: z.string().min(3).max(6000),
+  tags: z.array(z.string().max(PACK_LIMITS.tagChars).regex(/^[\p{L}\p{N} _-]*$/u)).max(PACK_LIMITS.tags),
+  withdrawHash: z.string().regex(/^[0-9a-f]{64}$/),
+});
 
 const ScoreRequest = z.strictObject({
   reference: z.string().min(1).max(4000),
@@ -57,6 +68,7 @@ export interface HttpDeps {
   reloadAdmission: () => Promise<void>;
   score: (reference: string, candidates: string[]) => Promise<ScoreResult>;
   scorerStatus: () => { state: string; detail: string };
+  pack: PackMemory | null;
   uiDir?: string;
 }
 
@@ -221,13 +233,31 @@ export async function buildHttpServer(deps: HttpDeps): Promise<FastifyInstance> 
 
     const id = `chatcmpl-${Math.random().toString(36).slice(2, 14)}`;
     const created = Math.floor(Date.now() / 1000);
-    const gen = deps.gateway.execute({ messages: r.messages, settings, deadlineMs, target, ...(prefer ? { prefer } : {}) }, ctl.signal);
+
+    // Pack memory: give the model the most relevant anonymous notes as quoted context.
+    let messages = r.messages;
+    let packNotes: Array<{ id: string; title: string; solution: string; similarity: number }> = [];
+    // Skipped for very long prompts: notes must not push a request over the 2,048-token budget.
+    if (deps.pack && r.mesh?.pack !== false && totalChars < 3000) {
+      const question = [...r.messages].reverse().find((m) => m.role === 'user')?.content ?? '';
+      const found = await deps.pack.relevant(question).catch(() => []);
+      if (found.length) {
+        // The note text is returned too, so people see the pack's answer even if the model ignores it.
+        packNotes = found.map((f) => ({ id: f.note.id, title: f.note.title, solution: f.note.solution.slice(0, 600), similarity: f.similarity }));
+        // Keep the caller's own system instructions, after the notes.
+        const own = r.messages.filter((m) => m.role === 'system').map((m) => m.content);
+        const system = [deps.pack.contextMessage(found), ...own].join('\n\n');
+        messages = [{ role: 'system' as const, content: system }, ...r.messages.filter((m) => m.role !== 'system')];
+      }
+    }
+    const gen = deps.gateway.execute({ messages, settings, deadlineMs, target, ...(prefer ? { prefer } : {}) }, ctl.signal);
     const meshInfo = (worker: string | null, route: 'local' | 'remote' | null, attempts: AttemptRecord[]) => ({
       gatewayPeerId: deps.selfPeerId,
       workerPeerId: worker,
       route,
       attempts,
       runtime: deps.runtimeKind,
+      ...(packNotes.length ? { packNotes } : {}),
     });
 
     if (!r.stream) {
@@ -355,6 +385,81 @@ export async function buildHttpServer(deps: HttpDeps): Promise<FastifyInstance> 
     return deps.score(parsed.data.reference, parsed.data.candidates);
   });
   app.get('/v1/mesh/scorer', { preHandler: requireRole('client') }, async () => deps.scorerStatus());
+
+  // ------------------------------------------------------------------ pack memory
+  const pack = deps.pack;
+  const noPack = (reply: FastifyReply) => sendError(reply, new MeshError('not_ready', 'pack memory is disabled on this node'));
+
+  /**
+   * Share a note. The browser sends only the SHA-256 of its secret withdrawal
+   * token; the token itself stays in the browser. Personal data is scrubbed
+   * here as well as in the browser preview. Nothing identifying is stored.
+   */
+  app.post('/v1/pack/notes', { preHandler: requireRole('client') }, async (req, reply) => {
+    if (!pack) return noPack(reply);
+    const p = ShareRequest.safeParse(req.body);
+    if (!p.success) return sendError(reply, new MeshError('bad_request', `invalid note: ${p.error.issues[0]?.path.join('.')} ${p.error.issues[0]?.message ?? ''}`));
+    const title = scrub(p.data.title);
+    const problem = scrub(p.data.problem);
+    const solution = scrub(p.data.solution);
+    const r = pack.store.createLocal({
+      kind: p.data.kind,
+      title: title.text.slice(0, PACK_LIMITS.titleChars),
+      problem: problem.text.slice(0, PACK_LIMITS.problemChars),
+      solution: solution.text.slice(0, PACK_LIMITS.solutionChars),
+      tags: [...new Set(p.data.tags.map((t) => t.trim().toLowerCase()).filter(Boolean))].slice(0, PACK_LIMITS.tags),
+      withdrawHash: p.data.withdrawHash,
+    });
+    if (!r.ok) return sendError(reply, new MeshError('bad_request', r.reason));
+    return { id: r.id, note: r.note, removed: [...new Set([...title.removed, ...problem.removed, ...solution.removed])] };
+  });
+
+  app.get('/v1/pack/notes', { preHandler: requireRole('client') }, async (req, reply) => {
+    if (!pack) return noPack(reply);
+    const q = req.query as { q?: string; limit?: string; hidden?: string };
+    const includeHidden = q.hidden === '1' && roleOf(req) === 'admin';
+    return pack.search(String(q.q ?? '').slice(0, 500), Math.min(100, Math.max(1, Number(q.limit) || 50)), includeHidden);
+  });
+
+  app.post('/v1/pack/withdraw', { preHandler: requireRole('client') }, async (req, reply) => {
+    if (!pack) return noPack(reply);
+    const p = z.strictObject({ noteId: z.string().regex(/^[0-9a-f]{64}$/), token: z.string().regex(/^[A-Za-z0-9_-]{32,64}$/) }).safeParse(req.body);
+    if (!p.success) return sendError(reply, new MeshError('bad_request', 'invalid withdrawal'));
+    if (!pack.store.notes.has(p.data.noteId)) return sendError(reply, new MeshError('bad_request', 'this node does not hold that note'));
+    const r = pack.store.acceptTomb({ v: 1, noteId: p.data.noteId, token: p.data.token, day: new Date().toISOString().slice(0, 10) });
+    if (!r.ok) return sendError(reply, new MeshError('forbidden', r.reason));
+    return { withdrawn: true };
+  });
+
+  /** "This helped": local reinforcement only (never shared, so it cannot be used to track anyone). */
+  app.post('/v1/pack/notes/:id/helped', { preHandler: requireRole('client') }, async (req, reply) => {
+    if (!pack) return noPack(reply);
+    const id = (req.params as { id: string }).id;
+    if (!pack.store.notes.has(id)) return sendError(reply, new MeshError('bad_request', 'unknown note'));
+    pack.store.reinforce(id, 1, false);
+    return { ok: true, weight: pack.store.weight(id).w };
+  });
+
+  app.get('/v1/pack/stats', { preHandler: requireRole('client') }, async (_req, reply) => {
+    if (!pack) return noPack(reply);
+    return {
+      notes: pack.store.notes.size,
+      visible: pack.store.visible().length,
+      withdrawn: pack.store.tombs.size,
+      waitingToSpread: pack.store.pendingCount,
+      semanticSearch: pack.semantic,
+      lastSync: pack.lastSync,
+      limits: { maxNotes: PACK_LIMITS.maxNotes },
+    };
+  });
+
+  app.post('/admin/pack/hide', { preHandler: requireRole('admin') }, async (req, reply) => {
+    if (!pack) return noPack(reply);
+    const p = z.strictObject({ id: z.string().regex(/^[0-9a-f]{64}$/), hidden: z.boolean() }).safeParse(req.body);
+    if (!p.success) return sendError(reply, new MeshError('bad_request', 'invalid request'));
+    pack.store.setHidden(p.data.id, p.data.hidden);
+    return { ok: true };
+  });
 
   /** Lets the UI discover whether its credential works and which role it has. */
   app.get('/v1/mesh/whoami', { preHandler: requireRole('client') }, async (req) => ({ role: roleOf(req), gatewayPeerId: deps.selfPeerId }));

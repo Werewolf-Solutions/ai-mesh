@@ -14,6 +14,7 @@ Each full node:
 - routes each request to itself or to a directly connected peer, based on locally measured load and latency
 - retries on up to two other workers if a worker fails **before** any text was produced; if one fails **after** text started, the answer is marked *interrupted* and never silently continued elsewhere
 - reaches peers behind NAT through circuit relays run by public nodes, and keeps working if either of two relays is lost
+- keeps an anonymous **pack memory**: people share how they solved a problem, every node keeps a copy, similar ideas merge, and relevant notes are shown and given to the model when a similar question comes up ([docs/pack-memory.md](docs/pack-memory.md))
 - serves an OpenAI-compatible subset of the HTTP API and a UI with chat, a network dashboard, and a Tests page: a reading-speed test you can run against any node, with each summary scored against an ideal summary (optional `./mesh model download --scorer`), plus the published benchmarks
 
 What each failure does, and what it does not survive, is listed in [docs/architecture.md](docs/architecture.md#failures-tolerated). The security assumptions are in [docs/security.md](docs/security.md).
@@ -134,6 +135,7 @@ What was run, and what could not be, is recorded in [docs/testing.md](docs/testi
 - [Peer protocol](docs/protocol.md) and [HTTP API](docs/api.md)
 - [Ubuntu operations guide](docs/operations.md)
 - [Security assumptions](docs/security.md)
+- [Pack memory](docs/pack-memory.md)
 - [Model provenance](docs/model.md)
 - [Benchmarks](docs/benchmarks.md) · [Testing](docs/testing.md) · [Roadmap](docs/roadmap.md) · [Progress checklist](PROGRESS.md)
 

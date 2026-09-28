@@ -245,3 +245,54 @@ describe('summary scoring', async () => {
     expect(cosine([1, 2], [-1, -2])).toBeCloseTo(-1);
   });
 });
+
+describe('pack memory store', async () => {
+  const { PackStore, noteId, tombId, sha256 } = await import('../../apps/node/src/pack/store.js');
+  const { scrub, isShareIntent } = await import('@werewolf-mesh/protocol');
+  const log = { warn: () => {}, info: () => {}, debug: () => {} } as any;
+  const body = (t: string, tok: string) => ({ v: 1 as const, kind: 'solution' as const, title: t, problem: '', solution: 'do the thing', tags: [], day: '2026-09-28', withdrawHash: sha256(tok) });
+
+  it('accepts notes only when the id is the content hash; merges by id', async () => {
+    const s = new PackStore(await tmp(), { publishDelayMinMs: 0, publishDelayMaxMs: 0, log });
+    const b = body('A title', 'tok'.repeat(12));
+    const id = noteId(b);
+    expect(s.acceptNote({ ...b, id }, 'peer')).toMatchObject({ ok: true, isNew: true });
+    expect(s.acceptNote({ ...b, id }, 'peer')).toMatchObject({ ok: true, isNew: false });
+    expect(s.acceptNote({ ...b, title: 'Tampered', id }, 'peer')).toMatchObject({ ok: false });
+  });
+
+  it('withdrawal needs the secret; a withdrawal that arrives first blocks the note', async () => {
+    const s = new PackStore(await tmp(), { publishDelayMinMs: 0, publishDelayMaxMs: 0, log });
+    const tok = 'x'.repeat(40);
+    const b = body('Another', tok);
+    const id = noteId(b);
+    s.acceptNote({ ...b, id }, 'peer');
+    expect(s.acceptTomb({ v: 1, noteId: id, token: 'y'.repeat(40), day: '2026-09-28' }).ok).toBe(false);
+    expect(s.acceptTomb({ v: 1, noteId: id, token: tok, day: '2026-09-28' }).ok).toBe(true);
+    expect(s.notes.has(id)).toBe(false);
+    expect(s.tombs.has(tombId(id))).toBe(true);
+    const s2 = new PackStore(await tmp(), { publishDelayMinMs: 0, publishDelayMaxMs: 0, log });
+    s2.acceptTomb({ v: 1, noteId: id, token: tok, day: '2026-09-28' });
+    expect(s2.acceptNote({ ...b, id }, 'peer').ok).toBe(false);
+  });
+
+  it('holds local notes back from peers until the publish delay passes', async () => {
+    let now = 1_000_000;
+    const s = new PackStore(await tmp(), { publishDelayMinMs: 5000, publishDelayMaxMs: 5000, log, now: () => now });
+    const r = s.createLocal({ kind: 'idea', title: 'Local idea', problem: '', solution: 'something', tags: [], withdrawHash: sha256('t'.repeat(40)) });
+    expect(r.ok).toBe(true);
+    expect(s.getItems([r.ok ? r.id : ''], []).notes).toHaveLength(0);
+    now += 5001;
+    expect(s.getItems([r.ok ? r.id : ''], []).notes).toHaveLength(1);
+  });
+
+  it('scrubs personal data and recognises share requests', () => {
+    const r = scrub('mail a.b@c.io, call 020 7946 0958, ip 10.0.0.1, see https://x.org/p?token=abc, key ' + 'sk_' + 'live_' + 'fixture1'.repeat(4) + '');
+    expect(r.text).not.toMatch(/a\.b@c\.io|7946|10\.0\.0\.1|token=abc|fixture1/);
+    expect(r.text).toContain('https://x.org/p');
+    for (const yes of ['share this with the pack', 'Please add it to the hive!', 'share it', 'Share the answer with the pack.', 'save this solution to the pack', 'share with the pack', 'Can you share this with the pack?'])
+      expect(isShareIntent(yes), yes).toBe(true);
+    for (const no of ['How do wolves share food in a pack?', 'what is the capital of France?', 'Wolves share food with the pack after a hunt', 'Can you tell me how a pack shares food?', 'I want to add a new member to the pack'])
+      expect(isShareIntent(no), no).toBe(false);
+  });
+});

@@ -1,7 +1,10 @@
 import { MeshClient } from '@werewolf-mesh/client';
+import { isShareIntent } from '@werewolf-mesh/protocol';
 import { useEffect, useMemo, useRef, useState } from 'react';
+import { PackApi, titleFrom } from '../pack';
 import { uid, type Chat, type Gateway, type Message } from '../store';
 import { NodeBadge } from './Moon';
+import { ShareCard } from './ShareCard';
 
 interface Props {
   chat: Chat | null;
@@ -17,16 +20,29 @@ const STATUS_TEXT: Record<string, string> = {
   failed: 'No answer.',
 };
 
+/** The question an answer responds to: the closest earlier real user message. */
+function questionFor(messages: Message[], answerIdx: number): string {
+  for (let i = answerIdx - 1; i >= 0; i--) {
+    const m = messages[i]!;
+    if (m.role === 'user' && !m.meta) return m.content;
+  }
+  return '';
+}
+
 export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) {
   const [draft, setDraft] = useState('');
   const [busy, setBusy] = useState(false);
+  const [sharing, setSharing] = useState<string | null>(null);
+  const [notesOpen, setNotesOpen] = useState<string | null>(null);
+  const [thanked, setThanked] = useState<Set<string>>(new Set());
   const abortRef = useRef<AbortController | null>(null);
   const endRef = useRef<HTMLDivElement>(null);
   const client = useMemo(() => new MeshClient(gateways.map((g) => ({ url: g.url, token: g.token || g.adminToken || undefined, label: g.label }))), [gateways]);
+  const pack = useMemo(() => new PackApi(gateways), [gateways]);
 
   useEffect(() => {
     endRef.current?.scrollIntoView({ block: 'end' });
-  }, [chat?.messages.length, chat?.messages.at(-1)?.content]);
+  }, [chat?.messages.length, chat?.messages.at(-1)?.content, sharing]);
 
   /** Generate a NEW assistant answer for `history`. Never appends to an older answer. */
   async function run(chatId: string, history: Message[]) {
@@ -39,14 +55,15 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
     setBusy(true);
     try {
       const r = await client.chat({
-        // Only complete exchanges are sent as context; interrupted/failed answers are left out.
-        messages: history.filter((m) => m.role === 'user' || m.status === 'completed').map((m) => ({ role: m.role, content: m.content })),
+        // Only complete exchanges are sent as context; interrupted/failed answers and UI-only messages are left out.
+        messages: history.filter((m) => !m.meta && (m.role === 'user' || m.status === 'completed')).map((m) => ({ role: m.role, content: m.content })),
         maxTokens: 256,
         signal: ctl.signal,
         onToken: (_t, full) => patch({ content: full }),
         onMeta: (meta) => patch({ worker: meta.workerPeerId, route: meta.route, gatewayUrl: meta.gatewayUrl, runtime: meta.runtime }),
       });
-      if (r.status === 'completed') patch({ content: r.text, status: 'completed', attempts: r.meta.attempts });
+      const notes = r.status === 'completed' || r.status === 'interrupted' ? r.meta.packNotes : undefined;
+      if (r.status === 'completed') patch({ content: r.text, status: 'completed', attempts: r.meta.attempts, ...(notes ? { packNotes: notes } : {}) });
       else if (r.status === 'interrupted') patch({ content: r.text, status: 'interrupted', error: r.error.message, attempts: r.meta.attempts });
       else if (r.status === 'cancelled') patch({ content: r.text, status: 'cancelled' });
       else
@@ -62,11 +79,37 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
     }
   }
 
+  /** "Share this with the pack" typed in the chat: share the latest completed answer right away (with Undo). */
+  async function shareFromChat(c: Chat, request: Message) {
+    const idx = [...c.messages].map((m, i) => ({ m, i })).reverse().find(({ m }) => m.role === 'assistant' && m.status === 'completed' && !m.meta)?.i;
+    const card: Message = { id: uid(), role: 'assistant', content: '', meta: true, at: Date.now() };
+    if (idx === undefined) {
+      onUpdate(c.id, (x) => ({ ...x, messages: [...x.messages, request, { ...card, packCard: { noteId: '', title: '', removed: [], error: 'There is no finished answer in this chat to share yet.' } }] }));
+      return;
+    }
+    const answer = c.messages[idx]!;
+    const question = questionFor(c.messages, idx);
+    onUpdate(c.id, (x) => ({ ...x, messages: [...x.messages, request] }));
+    try {
+      const r = await pack.share({ kind: 'solution', title: titleFrom(question), problem: question.slice(0, 1000), solution: answer.content.slice(0, 2000), tags: [] });
+      onUpdate(c.id, (x) => ({
+        ...x,
+        messages: [...x.messages.map((m) => (m.id === answer.id ? { ...m, sharedNoteId: r.id } : m)), { ...card, packCard: { noteId: r.id, title: r.note.title, removed: r.removed } }],
+      }));
+    } catch (e) {
+      onUpdate(c.id, (x) => ({ ...x, messages: [...x.messages, { ...card, packCard: { noteId: '', title: '', removed: [], error: (e as Error).message } }] }));
+    }
+  }
+
   function send() {
     const text = draft.trim();
     if (!text || busy) return;
     setDraft('');
     const msg: Message = { id: uid(), role: 'user', content: text, at: Date.now() };
+    if (chat && isShareIntent(text)) {
+      void shareFromChat(chat, { ...msg, meta: true });
+      return;
+    }
     if (!chat) {
       const id = onCreate(msg);
       void run(id, [msg]);
@@ -82,18 +125,39 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
     void run(chat.id, chat.messages.slice(0, idx));
   }
 
+  async function withdraw(cardMsg: Message) {
+    if (!chat || !cardMsg.packCard) return;
+    const noteId = cardMsg.packCard.noteId;
+    try {
+      await pack.withdraw(noteId);
+      onUpdate(chat.id, (c) => ({
+        ...c,
+        messages: c.messages.map((m) =>
+          m.id === cardMsg.id ? { ...m, packCard: { ...m.packCard!, withdrawn: true } } : m.sharedNoteId === noteId ? { ...m, sharedNoteId: undefined } : m,
+        ),
+      }));
+    } catch (e) {
+      onUpdate(chat.id, (c) => ({ ...c, messages: c.messages.map((m) => (m.id === cardMsg.id ? { ...m, packCard: { ...m.packCard!, error: (e as Error).message } } : m)) }));
+    }
+  }
+
   const messages = chat?.messages ?? [];
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="min-h-0 flex-1 overflow-y-auto px-4 sm:px-8">
         <div className="mx-auto max-w-[72ch] py-8">
           {messages.length === 0 && <EmptyState />}
-          {messages.map((m) =>
-            m.role === 'user' ? (
-              <div key={m.id} className="mb-6 flex justify-end">
-                <p className="max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-sm bg-ink px-4 py-2.5 text-paper">{m.content}</p>
-              </div>
-            ) : (
+          {messages.map((m, idx) => {
+            if (m.role === 'user') {
+              return (
+                <div key={m.id} className="mb-6 flex justify-end">
+                  <p className={`max-w-[85%] whitespace-pre-wrap rounded-2xl rounded-br-sm px-4 py-2.5 ${m.meta ? 'border border-moon text-ink' : 'bg-ink text-paper'}`}>{m.content}</p>
+                </div>
+              );
+            }
+            if (m.packCard) return <PackCardView key={m.id} m={m} onWithdraw={() => void withdraw(m)} />;
+            const done = m.status === 'completed';
+            return (
               <article key={m.id} className="rise mb-8" aria-live={m.status === 'streaming' ? 'polite' : undefined}>
                 <div className="mb-2 flex flex-wrap items-center gap-2">
                   {m.worker ? <NodeBadge peerId={m.worker} label={labels[m.worker]} route={m.route} /> : m.status === 'streaming' ? <span className="text-sm text-slate">Finding a node…</span> : null}
@@ -103,11 +167,37 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
                       answered after {m.attempts.length - 1} failed node{m.attempts.length > 2 ? 's' : ''}
                     </span>
                   )}
+                  {m.packNotes && m.packNotes.length > 0 && (
+                    <button type="button" className="rounded-full border border-moon px-2 py-0.5 text-xs" aria-expanded={notesOpen !== m.id} onClick={() => setNotesOpen(notesOpen === m.id ? null : m.id)}>
+                      {notesOpen === m.id ? 'show' : 'hide'} {m.packNotes.length} pack note{m.packNotes.length > 1 ? 's' : ''}
+                    </button>
+                  )}
                 </div>
+                {notesOpen !== m.id && m.packNotes && m.packNotes.length > 0 && (
+                  <div className="mb-3 rounded-lg border-l-2 border-moon bg-sheet p-3 text-sm">
+                    <p className="text-slate">From the pack’s memory (shared anonymously, may be wrong). The model was given this, but a small model can ignore it:</p>
+                    <ul className="mt-2 space-y-3">
+                      {m.packNotes.map((n) => (
+                        <li key={n.id} className="grid gap-1">
+                          <span className="font-medium">{n.title}</span>
+                          {n.solution && <span className="whitespace-pre-wrap font-display leading-[1.55]">{n.solution}</span>}
+                          <button
+                            type="button"
+                            disabled={thanked.has(n.id)}
+                            className="justify-self-start rounded-md border border-rule px-2 py-0.5 text-xs disabled:opacity-50"
+                            onClick={() => void pack.helped(n.id).then(() => setThanked((s) => new Set(s).add(n.id)))}
+                          >
+                            {thanked.has(n.id) ? 'Thanks, noted' : 'This helped'}
+                          </button>
+                        </li>
+                      ))}
+                    </ul>
+                  </div>
+                )}
                 <div className={`whitespace-pre-wrap font-display text-[1.075rem] leading-[1.65] ${m.status === 'streaming' ? 'caret' : ''} ${m.status === 'interrupted' ? 'text-ink/75' : ''}`}>
                   {m.content}
                 </div>
-                {m.status && m.status !== 'streaming' && m.status !== 'completed' && (
+                {m.status && m.status !== 'streaming' && !done && (
                   <div className={`mt-3 flex flex-wrap items-center gap-3 border-l-2 pl-3 text-sm ${m.status === 'cancelled' ? 'border-rule text-slate' : 'border-blood text-blood'}`}>
                     <span className="whitespace-pre-wrap">{STATUS_TEXT[m.status]}{m.error && m.status !== 'cancelled' ? ` ${m.error}` : ''}</span>
                     <button type="button" disabled={busy} onClick={() => retry(m)} className="rounded-md border border-current px-2.5 py-0.5 font-medium disabled:opacity-40">
@@ -115,9 +205,32 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
                     </button>
                   </div>
                 )}
+                {done && sharing !== m.id && (
+                  <div className="mt-2 text-sm">
+                    {m.sharedNoteId ? (
+                      <span className="text-pine">Shared with the pack</span>
+                    ) : (
+                      <button type="button" className="text-slate underline decoration-moon underline-offset-2 hover:text-ink" onClick={() => setSharing(m.id)}>
+                        Solved something? Share how with the pack
+                      </button>
+                    )}
+                  </div>
+                )}
+                {sharing === m.id && chat && (
+                  <ShareCard
+                    gateways={gateways}
+                    question={questionFor(messages, idx)}
+                    answer={m.content}
+                    onCancel={() => setSharing(null)}
+                    onDone={(r) => {
+                      setSharing(null);
+                      onUpdate(chat.id, (c) => ({ ...c, messages: c.messages.map((x) => (x.id === m.id ? { ...x, sharedNoteId: r.id } : x)) }));
+                    }}
+                  />
+                )}
               </article>
-            ),
-          )}
+            );
+          })}
           <div ref={endRef} />
         </div>
       </div>
@@ -143,7 +256,7 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
                 send();
               }
             }}
-            placeholder="Ask the pack…"
+            placeholder="Ask the pack…  (say “share this with the pack” to share the last answer)"
             className="min-h-[2.75rem] flex-1 resize-none rounded-xl border border-rule bg-paper px-3 py-2 text-ink placeholder:text-slate focus:border-moon focus:outline-none"
           />
           {busy ? (
@@ -164,12 +277,40 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
   );
 }
 
+function PackCardView({ m, onWithdraw }: { m: Message; onWithdraw: () => void }) {
+  const c = m.packCard!;
+  if (!c.noteId) {
+    return <p className="mb-8 border-l-2 border-blood pl-3 text-sm text-blood">Not shared: {c.error}</p>;
+  }
+  return (
+    <div className="rise mb-8 rounded-xl border border-moon/60 bg-sheet p-4 text-sm">
+      {c.withdrawn ? (
+        <p className="text-slate">Withdrawn. The note is being removed from every node in the pack.</p>
+      ) : (
+        <>
+          <p>
+            <span className="font-display text-base">Shared anonymously with the pack:</span> “{c.title}”
+          </p>
+          <p className="mt-1 text-slate">
+            Only this question and answer were shared, without your name, node or the time of day. It reaches the other nodes within a few minutes.
+            {c.removed.length > 0 ? ` Removed first: ${c.removed.join(', ')}.` : ''}
+          </p>
+          <button type="button" className="mt-2 rounded-md border border-rule px-2.5 py-1" onClick={onWithdraw}>
+            Undo
+          </button>
+          {c.error && <p className="mt-2 text-blood">{c.error}</p>}
+        </>
+      )}
+    </div>
+  );
+}
+
 function EmptyState() {
   return (
     <div className="mt-[12vh] text-center">
       <h1 className="font-display text-4xl tracking-tight sm:text-5xl">Ask the pack</h1>
       <p className="mx-auto mt-4 max-w-[46ch] text-slate">
-        Your question goes to a gateway you chose, which hands it to whichever node in the mesh is free. You will see which node answered.
+        Your question goes to a gateway you chose, which hands it to whichever node in the mesh is free. Solved something? Share how, and every node remembers it.
       </p>
     </div>
   );

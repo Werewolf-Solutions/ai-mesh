@@ -30,6 +30,8 @@ export interface MeshMeta {
   attempts: Array<{ workerPeerId: string; route: string; outcome: string }>;
   /** Worker-measured timings from the final chunk (absent on interrupted streams). */
   timings?: { queueMs: number; firstTokenMs: number; totalMs: number };
+  /** Anonymous pack-memory notes the gateway gave the model as context. */
+  packNotes?: Array<{ id: string; title: string; solution?: string; similarity: number }>;
 }
 
 /** Response of POST /v1/mesh/score. */
@@ -57,6 +59,8 @@ export interface ChatOptions {
   temperature?: number;
   /** Mesh extension: 'auto' | 'local' | peer ID. */
   target?: string;
+  /** Set false to stop the gateway adding pack-memory notes as context. */
+  pack?: boolean;
   signal?: AbortSignal;
   onToken?: (text: string, full: string) => void;
   onMeta?: (meta: MeshMeta) => void;
@@ -172,7 +176,7 @@ export class MeshClient {
             stream: true,
             ...(o.maxTokens ? { max_tokens: o.maxTokens } : {}),
             ...(o.temperature !== undefined ? { temperature: o.temperature } : {}),
-            ...(o.target && o.target !== 'auto' ? { mesh: { target: o.target } } : {}),
+            ...(o.target && o.target !== 'auto' ? { mesh: { target: o.target, ...(o.pack === false ? { pack: false } : {}) } } : o.pack === false ? { mesh: { pack: false } } : {}),
           }),
           signal: ctl.signal,
         });
@@ -229,6 +233,8 @@ export class MeshClient {
       }
       if (j.mesh?.attempts) meta.attempts = j.mesh.attempts;
       if (j.mesh?.timings) meta.timings = j.mesh.timings;
+      const pn = (j.mesh as { packNotes?: MeshMeta['packNotes'] } | undefined)?.packNotes;
+      if (pn) meta.packNotes = pn;
       const c = j.choices?.[0];
       const t = c?.delta?.content;
       if (t) {

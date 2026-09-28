@@ -25,6 +25,14 @@ export interface Message {
   gatewayUrl?: string;
   runtime?: string | null;
   attempts?: Array<{ workerPeerId: string; outcome: string }>;
+  /** Pack notes the gateway gave the model for this answer. */
+  packNotes?: Array<{ id: string; title: string; solution?: string; similarity: number }>;
+  /** Set on an answer after it was shared with the pack. */
+  sharedNoteId?: string;
+  /** UI-only message (e.g. "share this with the pack" and its confirmation): never sent to the model. */
+  meta?: boolean;
+  /** Confirmation card for a note shared from the chat. */
+  packCard?: { noteId: string; title: string; removed: string[]; withdrawn?: boolean; error?: string };
   at: number;
 }
 
