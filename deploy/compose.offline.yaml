@@ -1,0 +1,8 @@
+# Overlay: cut every container off from the internet (no default route).
+# Use to prove that installed nodes run with model-download services unreachable:
+#   docker compose -f <cluster>/compose.yaml -f deploy/compose.offline.yaml up -d
+# Note: Docker does not publish host ports for containers that are only on
+# internal networks, so talk to nodes with `docker compose exec`.
+networks:
+  mesh:
+    internal: true

@@ -1,0 +1,10 @@
+node_modules/
+dist/
+.cache/
+models/*.gguf
+models/*.part
+data/
+deploy/generated/
+*.log
+.env
+coverage/

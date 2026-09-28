@@ -1,0 +1,20 @@
+Werewolf AI Mesh
+Copyright 2026 Werewolf AI Mesh contributors
+
+This product is licensed under the Apache License, Version 2.0 (see LICENSE).
+
+Third-party components (NOT covered by this project's copyright; their own
+licences apply and are preserved):
+
+- SmolLM2-135M-Instruct by Hugging Face (HuggingFaceTB), Apache License 2.0.
+  https://huggingface.co/HuggingFaceTB/SmolLM2-135M-Instruct
+  GGUF conversion by bartowski (bartowski/SmolLM2-135M-Instruct-GGUF), same licence.
+  Model weights are downloaded by the operator; they are not distributed in this repository.
+
+- llama.cpp by the ggml-org authors, MIT License.
+  https://github.com/ggml-org/llama.cpp
+  Used as a separate process / container image (b11223); not vendored.
+
+- JavaScript dependencies (libp2p, Fastify, React, Zod, pino, Vite, Tailwind CSS
+  and their transitive dependencies) are distributed under their own licences
+  (mostly MIT / Apache-2.0); see each package in node_modules or pnpm-lock.yaml.

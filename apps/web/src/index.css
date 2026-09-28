@@ -1,0 +1,77 @@
+@import 'tailwindcss';
+
+/* Moonlit paper by day, night sky by night. System faces only: the UI is served
+   by nodes that may be offline, so no font CDN is ever contacted. */
+@theme {
+  --color-paper: #eef1f5;
+  --color-sheet: #f8f9fb;
+  --color-ink: #1d2742;
+  --color-slate: #5b6785;
+  --color-rule: #d3d9e3;
+  --color-moon: #d99a1e;
+  --color-moon-soft: #f5e4bd;
+  --color-pine: #2f6b55;
+  --color-blood: #a33a3a;
+  --font-display: 'Iowan Old Style', 'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif;
+  --font-sans: ui-sans-serif, system-ui, -apple-system, 'Segoe UI', Roboto, 'Helvetica Neue', Arial, sans-serif;
+}
+
+@media (prefers-color-scheme: dark) {
+  :root {
+    --color-paper: #141a2b;
+    --color-sheet: #1b2238;
+    --color-ink: #e3e7ef;
+    --color-slate: #9aa4bd;
+    --color-rule: #2c3552;
+    --color-moon: #e8b04a;
+    --color-moon-soft: #3a3322;
+    --color-pine: #6fbf9c;
+    --color-blood: #e07a7a;
+  }
+}
+
+html,
+body {
+  background: var(--color-paper);
+  color: var(--color-ink);
+  font-family: var(--font-sans);
+  font-size: 16px;
+  line-height: 1.5;
+}
+
+.num {
+  font-variant-numeric: tabular-nums;
+}
+
+:focus-visible {
+  outline: 2px solid var(--color-moon);
+  outline-offset: 2px;
+  border-radius: 4px;
+}
+
+@media (prefers-reduced-motion: no-preference) {
+  .rise {
+    animation: rise 420ms cubic-bezier(0.2, 0.7, 0.2, 1) both;
+  }
+  @keyframes rise {
+    from {
+      opacity: 0;
+      transform: translateY(6px);
+    }
+  }
+  .caret::after {
+    content: '';
+    display: inline-block;
+    width: 0.5em;
+    height: 1em;
+    margin-left: 2px;
+    vertical-align: -2px;
+    background: var(--color-moon);
+    animation: blink 1s steps(2) infinite;
+  }
+  @keyframes blink {
+    50% {
+      opacity: 0;
+    }
+  }
+}

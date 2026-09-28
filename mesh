@@ -1,0 +1,10 @@
+#!/usr/bin/env bash
+# Werewolf AI Mesh operator CLI wrapper. See: ./mesh help
+set -euo pipefail
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
+CLI="$ROOT/apps/node/dist/cli.js"
+if [ ! -f "$CLI" ]; then
+  echo "Not built yet. Run: pnpm install --frozen-lockfile && pnpm build" >&2
+  exit 1
+fi
+exec node "$CLI" "$@"

@@ -1,0 +1,39 @@
+{
+  "name": "werewolf-ai-mesh",
+  "private": true,
+  "version": "0.1.0",
+  "license": "Apache-2.0",
+  "type": "module",
+  "packageManager": "pnpm@10.34.5",
+  "engines": {
+    "node": ">=22.12.0"
+  },
+  "devDependencies": {
+    "@chainsafe/libp2p-noise": "17.0.0",
+    "@chainsafe/libp2p-yamux": "8.0.1",
+    "@libp2p/crypto": "5.1.23",
+    "@libp2p/identify": "4.1.14",
+    "@libp2p/interface": "3.3.0",
+    "@libp2p/peer-id": "6.0.15",
+    "@libp2p/tcp": "11.0.28",
+    "@libp2p/utils": "7.4.1",
+    "@multiformats/multiaddr": "13.0.3",
+    "@types/node": "^22.20.4",
+    "@werewolf-mesh/client": "workspace:*",
+    "@werewolf-mesh/protocol": "workspace:*",
+    "libp2p": "3.3.11",
+    "tsx": "4.23.15",
+    "typescript": "7.0.2",
+    "vitest": "5.0.2",
+    "zod": "4.6.5"
+  },
+  "scripts": {
+    "build": "pnpm --filter @werewolf-mesh/protocol build && pnpm --filter @werewolf-mesh/client build && pnpm --filter @werewolf-mesh/node build && pnpm --filter @werewolf-mesh/web build",
+    "typecheck": "pnpm -r exec tsc -p tsconfig.json --noEmit",
+    "test": "vitest run --project unit --project integration",
+    "test:unit": "vitest run --project unit",
+    "test:integration": "vitest run --project integration",
+    "test:real": "vitest run --project real",
+    "mesh": "node apps/node/dist/cli.js"
+  }
+}

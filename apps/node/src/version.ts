@@ -1,0 +1,7 @@
+import { fileURLToPath } from 'node:url';
+import { dirname, resolve } from 'node:path';
+
+export const SOFTWARE_VERSION = '0.1.0';
+
+/** Repository root (apps/node/dist/.. or apps/node/src/.. → ../../..). */
+export const REPO_ROOT = resolve(dirname(fileURLToPath(import.meta.url)), '..', '..', '..');
