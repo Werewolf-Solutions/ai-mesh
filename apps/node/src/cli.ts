@@ -55,6 +55,7 @@ Setup
                                         GPU (or RAM) is filled first and lenders get the rest
   search start|stop|status              Run the local SearXNG search engine (Docker, 127.0.0.1 only) for web research
   search test "query"                   Show what the node's web search returns for a query
+  code setup|status|test                Install and check the offline Python sandbox used to test code answers
   model download|import|verify --scorer Same, for the optional embedding model that scores summaries in the UI
 
 Node
@@ -697,6 +698,46 @@ async function searchCmd(a: Args): Promise<void> {
   fail(`the search engine did not answer; see: docker logs ${SEARX_CONTAINER}`);
 }
 
+async function codeCmd(a: Args): Promise<void> {
+  const sub = a._[1] ?? 'status';
+  const cfg = await loadConfig(dataDir(a)).catch(() => null);
+  const { PYTHON_SANDBOX_IMAGE } = await import('./config.js');
+  const code = cfg?.agent.code;
+  const image = code?.image ?? PYTHON_SANDBOX_IMAGE;
+  const { runPython, sandboxStatus } = await import('./agent/sandbox.js');
+  if (sub === 'status') {
+    out(`sandbox image ${image}`);
+    out(`status: ${sandboxStatus(image).detail}`);
+    out(`code pipeline: ${code?.enabled === false ? 'turned off (agent.code.enabled)' : 'on'}${code?.allowClients ? ', also for client tokens' : ', operator only'}`);
+    return;
+  }
+  if (sub === 'setup') {
+    out(`pulling ${image} …`);
+    const r = spawnSync('docker', ['pull', image], { stdio: 'inherit' });
+    if (r.status !== 0) fail('docker pull failed');
+    out('sandbox ready. Check it with: ./mesh code test');
+    return;
+  }
+  if (sub !== 'test') fail('usage: ./mesh code [setup|status|test]');
+  const opts = { image, timeoutMs: 5000, memoryMb: code?.memoryMb ?? 256, cpus: code?.cpus ?? 1, maxOutputBytes: 64 * 1024 };
+  const checks: Array<[string, string, (r: Awaited<ReturnType<typeof runPython>>) => boolean]> = [
+    ['runs Python', 'print(sum(range(10)))', (r) => r.exitCode === 0 && r.stdout.trim() === '45'],
+    ['has no network', 'import socket\ntry:\n  socket.create_connection(("1.1.1.1", 53), timeout=2); print("open")\nexcept OSError: print("blocked")', (r) => r.stdout.trim() === 'blocked'],
+    ['cannot write files', 'try:\n  open("/sandbox-test", "w"); print("wrote")\nexcept OSError: print("blocked")', (r) => r.stdout.trim() === 'blocked'],
+    ['runs as nobody', 'import os; print(os.getuid())', (r) => r.stdout.trim() === '65534'],
+    ['stops endless loops', 'while True: pass', (r) => r.timedOut],
+  ];
+  let bad = 0;
+  for (const [name, program, ok] of checks) {
+    const r = await runPython(program, opts);
+    if (r.error) fail(r.error);
+    const good = ok(r);
+    if (!good) bad++;
+    out(`${good ? '✓' : '✕'} ${name} (${(r.ms / 1000).toFixed(1)} s)`);
+  }
+  if (bad) fail(`${bad} sandbox check(s) failed`);
+}
+
 async function resourcesCmd(a: Args): Promise<void> {
   const { ResourceMonitor } = await import('./system/resources.js');
   let local: InstanceType<typeof ResourceMonitor> | undefined;
@@ -1072,6 +1113,8 @@ async function main(): Promise<void> {
       return resourcesCmd(a);
     case 'search':
       return searchCmd(a);
+    case 'code':
+      return codeCmd(a);
     case 'split':
       return splitCmd(a);
     case 'engine':

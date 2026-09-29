@@ -3,7 +3,8 @@
 Status (2026-09-29):
 
 - **Web research is built** as a fixed pipeline: search → read → answer with sources. See [agents.md](agents.md). It runs on the asker's node, the model never chooses a URL, and fetch_url has the SSRF rules below.
-- Not built yet: free tool choice by the model, the code tool, session affinity, and per-domain approvals.
+- **The code pipeline is built** as a fixed pipeline: write → test in the sandbox → fix, up to 3 rounds ([agents.md](agents.md#tested-python-code)). Its fix rounds prefer the worker of the first round (a simple form of session affinity).
+- Not built yet: free tool choice by the model (and passing `tools` through the mesh), general session affinity, per-domain approvals, and the "local model only" setting.
 
 This design incorporates an external review of the first proposal; the changes are marked **(review)**.
 
@@ -33,7 +34,7 @@ A model never acts by itself. The asker's node runs a loop: it gives the model t
     - decimal, octal and hex IP spellings (parse, never string-match)
   - Enforce size and time limits **while streaming**, not after the download finishes.
   - Allow only http(s) on the default ports. Never send cookies or credentials.
-- **run_python:** the network-less, memory- and CPU-capped, read-only Docker sandbox already used by `scripts/code-eval.mjs`, with a time limit. There is no access to the host filesystem apart from a scratch directory.
+- **run_python:** a network-less, memory- and CPU-capped, read-only Docker sandbox, with a time limit (built: `apps/node/src/agent/sandbox.ts`). There is no access to the host filesystem: the program arrives on stdin.
 - **Approvals (review):** asked **per new domain** and **per first use of each tool in a session**, not per step, so prompts stay meaningful and aren't clicked through.
 - **web_search:** through a self-hosted SearXNG. Queries leave from the asker's own connection; the UI says so.
 

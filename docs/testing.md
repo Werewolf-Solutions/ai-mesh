@@ -84,6 +84,29 @@ It is never used by real deployments.
 - `tests/unit/resources.test.ts` (parsers and a live reading) and an integration check that `/admin/system` is refused to a client token (403).
 - Not checked: AMD and Intel GPUs, Intel `coretemp`, macOS and Windows (only the portable readings apply there).
 
+## Code pipeline (executed, 2026-09-29)
+
+- `tests/unit/code.test.ts` (20 cases): reading replies (solution, tests, the person's own tests), when "auto" runs, the pass marker (an early `sys.exit(0)` is not a pass), reading failures, the loop (pass in round 1, fix in round 2 with the same conversation prefix, give up after 3, best round wins, no code, no sandbox), and every `docker run` restriction.
+- `tests/integration/code.test.ts` (13 cases, real Docker, skipped without it):
+  - sandbox escapes: network, DNS, Docker host and metadata address blocked; writes refused and `/tmp` not executable; no host mounts; runs as nobody; endless loop, fork bomb (stopped below 64 processes) and a 512 MB allocation stopped; output flood capped; cancel
+  - the Python test harness: every test runs, both sides of a failing `==` are shown, the solution line that raised is named, the person's tests run too
+  - through a node process with a scripted stand-in engine: write → failing test → fix → pass, streamed steps, the value-level failure reaching the fix round, usage over both rounds, non-streaming, operator only (403 for a client token with "on", "auto" quietly off), no `code` + `web` "on", and "auto" only for Python requests
+- `./mesh code test` on this machine: all 5 checks pass; a run takes about 0.3 s.
+- Real model, Qwen3 8B on the RTX 3060 (the operator's running node, reached as an external engine from a test node), the 6 tasks of `scripts/code-eval.mjs`, graded afterwards by that script's own hidden tests:
+
+  | Task | Effort none: own tests | Effort low: own tests | Hidden tests (both) |
+  |---|---|---|---|
+  | ipv4 | 9/9, round 1 | 10/10, round 1 | pass |
+  | intervals | 6/6, round 1 | 6/6, round 1 | pass |
+  | lru | 0/6 after 3 rounds | 7/8 after 3 rounds | pass: the model's tests were wrong (`LRUCache(1).put(1, 1).get(1)`, but `put` returns None) |
+  | csv | 3/6 after 3 rounds | 1/6 after 3 rounds | fail: the tests caught a real bug, which 3 rounds did not fix |
+  | wordfreq | 2/5 after 3 rounds | ran, no tests | pass: at effort none the model's expected order was wrong |
+  | bugfix | 6/6, round 1 | 6/6, round 1 | fail: the hidden "must not mutate the input" was never asked for |
+
+  Rounds took 4–25 s at effort none and 12–53 s at effort low. What it shows: with this 8B model the pipeline did **not** raise the hidden pass rate (4 of 6, the same as without it). What it adds is an honest label: every broken solution was reported as failing, with the failing case. Its weak spot is the model's own tests: a wrong test makes correct code look broken (lru), which is why the note says the test may be wrong.
+- A first version reported only `AssertionError`, and the model rewrote the same wrong tests three times. Running each test separately and showing both sides of `==` made the failures readable, but did not make this model fix its own tests.
+- Not checked in a browser: the chat's **Code** button (the build passes). The operator's node runs the build from before this change and rejects the new `mesh.code` field, so the web UI it serves was left at that build. It needs `pnpm build` and a node restart together.
+
 ## Web research (executed, 2026-09-29)
 
 - `tests/unit/agent.test.ts` (56 cases):

@@ -87,15 +87,27 @@ export interface ChatCompletionChunk {
     runtime?: 'llama.cpp' | 'fake' | 'external';
     /** Worker-measured; present on the final chunk. firstTokenMs ≈ time spent reading the prompt. */
     timings?: { queueMs: number; firstTokenMs: number; totalMs: number };
-    /** Web research progress (step chunks carry no text) and, once found, the sources. */
-    agent?: { step?: AgentStepView; sources?: AgentSourceView[]; query?: string | null };
+    /** Web research or code pipeline progress (step chunks carry no text); the web sources once found; the code's test result. */
+    agent?: { step?: AgentStepView; sources?: AgentSourceView[]; query?: string | null; code?: CodeRunView };
   };
 }
 
 export interface AgentStepView {
-  kind: 'query' | 'search' | 'read' | 'answer';
+  kind: 'query' | 'search' | 'read' | 'answer' | 'write' | 'test' | 'fix';
   status: 'running' | 'done' | 'failed';
   text: string;
+}
+
+/** The code pipeline's outcome: passed = null when nothing was tested. */
+export interface CodeRunView {
+  passed: boolean | null;
+  untested: boolean;
+  /** Rounds run, and the round whose reply is the answer (the best one). */
+  rounds: number;
+  bestRound: number;
+  testsPassed: number;
+  testsTotal: number;
+  failure: string | null;
 }
 
 export interface AgentSourceView {

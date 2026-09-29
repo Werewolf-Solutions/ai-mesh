@@ -38,6 +38,8 @@ export interface Message {
   steps?: Array<{ kind: string; status: 'running' | 'done' | 'failed'; text: string }>;
   sources?: Array<{ n: number; title: string; url: string; kind: 'page' | 'snippet' }>;
   webQuery?: string | null;
+  /** Code pipeline result (the steps are in `steps`): passed = null when nothing could be tested. */
+  codeRun?: { passed: boolean | null; untested: boolean; rounds: number; bestRound: number; testsPassed: number; testsTotal: number; failure: string | null };
   /** Set on an answer after it was shared with the pack. */
   sharedNoteId?: string;
   /** UI-only message (e.g. "share this with the pack" and its confirmation): never sent to the model. */

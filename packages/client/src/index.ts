@@ -12,7 +12,7 @@
  *
  * Works in browsers and Node >= 18 (global fetch + ReadableStream).
  */
-import { SseParser, type AgentSourceView, type AgentStepView, type ChatCompletionChunk, type ChatMessage } from '@werewolf-mesh/protocol';
+import { SseParser, type AgentSourceView, type AgentStepView, type ChatCompletionChunk, type ChatMessage, type CodeRunView } from '@werewolf-mesh/protocol';
 
 export interface GatewayConfig {
   url: string;
@@ -37,6 +37,8 @@ export interface MeshMeta {
   packNotes?: Array<{ id: string; title: string; solution?: string; similarity: number }>;
   /** Web research the gateway did before answering: the query, what it read, and each step. */
   web?: { query: string | null; sources: AgentSourceView[]; steps: AgentStepView[] };
+  /** The code pipeline: each write/test/fix step, then whether the tests passed. */
+  code?: { steps: AgentStepView[] } & Partial<CodeRunView>;
 }
 
 /** Response of POST /v1/mesh/score. */
@@ -74,7 +76,9 @@ export interface ChatOptions {
   pack?: boolean;
   /** Web research on the gateway: "on" = always search first, "auto" = when the message asks for it. */
   web?: 'auto' | 'on' | 'off';
-  /** Research progress (search, read, …) before the answer starts. */
+  /** Code pipeline on the gateway: "on" = write Python, test it in the sandbox and fix it; "auto" = when the message asks for Python code. */
+  code?: 'auto' | 'on' | 'off';
+  /** Research or code progress (search, read, write, test, …) before the answer starts. */
   onStep?: (step: AgentStepView, all: AgentStepView[]) => void;
   signal?: AbortSignal;
   onToken?: (text: string, full: string) => void;
@@ -95,11 +99,14 @@ export interface ClientOptions {
 /** HTTP statuses where another gateway may succeed (no output has been shown). */
 const FAILOVER_STATUS = new Set([401, 403, 404, 408, 429, 500, 502, 503, 504]);
 
+const CODE_STEPS = new Set(['write', 'test', 'fix']);
+
 function meshField(o: ChatOptions): { mesh?: Record<string, unknown> } {
   const m: Record<string, unknown> = {};
   if (o.target && o.target !== 'auto') m.target = o.target;
   if (o.pack === false) m.pack = false;
   if (o.web && o.web !== 'off') m.web = o.web;
+  if (o.code && o.code !== 'off') m.code = o.code;
   return Object.keys(m).length ? { mesh: m } : {};
 }
 
@@ -259,16 +266,18 @@ export class MeshClient {
       }
       const ag = j.mesh?.agent;
       if (ag) {
-        meta.web ??= { query: null, sources: [], steps: [] };
+        const isCode = !!ag.code || (ag.step && CODE_STEPS.has(ag.step.kind));
+        const bucket = isCode ? (meta.code ??= { steps: [] }) : (meta.web ??= { query: null, sources: [], steps: [] });
         if (ag.step) {
           // A step replaces the running step of the same kind.
-          const i = meta.web.steps.findIndex((x) => x.kind === ag.step!.kind && x.status === 'running');
-          if (i >= 0) meta.web.steps[i] = ag.step;
-          else meta.web.steps.push(ag.step);
-          o.onStep?.(ag.step, [...meta.web.steps]);
+          const i = bucket.steps.findIndex((x) => x.kind === ag.step!.kind && x.status === 'running');
+          if (i >= 0) bucket.steps[i] = ag.step;
+          else bucket.steps.push(ag.step);
+          o.onStep?.(ag.step, [...bucket.steps]);
         }
-        if (ag.sources) meta.web.sources = ag.sources;
-        if (ag.query !== undefined) meta.web.query = ag.query;
+        if (ag.code) Object.assign(meta.code!, ag.code);
+        if (meta.web && ag.sources) meta.web.sources = ag.sources;
+        if (meta.web && ag.query !== undefined) meta.web.query = ag.query;
       }
       // The stream may open before a worker is chosen (web research); attribution then arrives with the first text.
       if (j.mesh?.workerPeerId && j.mesh.workerPeerId !== meta.workerPeerId) {

@@ -4,7 +4,8 @@
  * so tests can prove the prompt arrived, and records every request.
  *
  * Directives in the last user message: [[think=N]] reasoning chunks (default 0),
- * [[tokens=N]] answer chunks (default 6).
+ * [[tokens=N]] answer chunks (default 6). `script` replaces the answer with
+ * its own text (for example a code block), split into a few chunks.
  */
 import http from 'node:http';
 import type { AddressInfo } from 'node:net';
@@ -16,7 +17,7 @@ export interface StandIn {
   close(): Promise<void>;
 }
 
-export async function startStandInEngine(opts: { model?: string; apiKey?: string } = {}): Promise<StandIn> {
+export async function startStandInEngine(opts: { model?: string; apiKey?: string; script?: (body: any) => string | undefined } = {}): Promise<StandIn> {
   const model = opts.model ?? 'deepseek-v4-flash';
   const requests: any[] = [];
   let down = false;
@@ -54,7 +55,8 @@ export async function startStandInEngine(opts: { model?: string; apiKey?: string
           await new Promise((r) => setTimeout(r, 1));
         }
         const echo = `echo(${last.replace(/\[\[[^\]]*\]\]/g, '').trim().slice(0, 40)}) `;
-        const parts = [echo, ...Array.from({ length: tokens - 1 }, (_, i) => `e${i} `)].slice(0, Math.min(tokens, body.max_tokens ?? 1e9));
+        const scripted = opts.script?.(body);
+        const parts = scripted !== undefined ? (scripted.match(/[\s\S]{1,40}/g) ?? []) : [echo, ...Array.from({ length: tokens - 1 }, (_, i) => `e${i} `)].slice(0, Math.min(tokens, body.max_tokens ?? 1e9));
         for (const p of parts) {
           if (closed) return;
           send({ content: p });

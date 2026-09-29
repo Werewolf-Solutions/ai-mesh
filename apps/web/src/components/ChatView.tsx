@@ -41,6 +41,7 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
   const [effort, setEffort] = usePersistent<Effort>('wam.effort', 'low');
   const [openThinking, setOpenThinking] = useState<Set<string>>(new Set());
   const [webOn, setWebOn] = usePersistent<boolean>('wam.web', false);
+  const [codeOn, setCodeOn] = usePersistent<boolean>('wam.code', false);
   const [openSteps, setOpenSteps] = useState<Set<string>>(new Set());
   const cat = useCatalog(gateways[0]);
   const modelName = (id: string) => cat.models?.find((x) => x.id === id)?.name ?? id;
@@ -71,6 +72,8 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
         effort,
         // Toggle on: always search first. Off: only when the message asks for it ("search the web…", a link).
         web: webOn ? 'on' : 'auto',
+        // Code on: write Python, test it in the sandbox, fix it. Off: only when the message asks for Python code.
+        code: codeOn ? 'on' : 'auto',
         onStep: (_s, all) => patch({ steps: all }),
         onReasoning: (_t, full) => {
           thinkStart ||= performance.now();
@@ -91,6 +94,7 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
       });
       const notes = r.status === 'completed' || r.status === 'interrupted' ? r.meta.packNotes : undefined;
       const web = r.status === 'completed' || r.status === 'interrupted' ? r.meta.web : undefined;
+      const code = r.status === 'completed' || r.status === 'interrupted' ? r.meta.code : undefined;
       const extra =
         r.status === 'completed' || r.status === 'interrupted'
           ? {
@@ -98,6 +102,7 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
               model: r.meta.model,
               effort: r.meta.effort,
               ...(web ? { steps: web.steps.map((s) => (s.kind === 'answer' ? { ...s, status: 'done' as const, text: s.text.replace(/^Writing/, 'Wrote') } : s)), sources: web.sources, webQuery: web.query } : {}),
+              ...(code ? { steps: code.steps, codeRun: { passed: code.passed ?? null, untested: code.untested ?? false, rounds: code.rounds ?? 0, bestRound: code.bestRound ?? 0, testsPassed: code.testsPassed ?? 0, testsTotal: code.testsTotal ?? 0, failure: code.failure ?? null } } : {}),
             }
           : {};
       if (r.status === 'completed') patch({ content: r.text, status: 'completed', attempts: r.meta.attempts, ...extra, ...(notes ? { packNotes: notes } : {}) });
@@ -321,7 +326,10 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
           <button
             type="button"
             aria-pressed={webOn}
-            onClick={() => setWebOn(!webOn)}
+            onClick={() => {
+              setWebOn(!webOn);
+              if (!webOn) setCodeOn(false);
+            }}
             title={webOn ? 'Every question is searched on the web first (from this computer, through your own search engine)' : 'Web search only when you ask for it ("search the web for…", or paste a link)'}
             className={`flex h-11 shrink-0 items-center gap-1.5 rounded-xl border px-3 text-sm ${webOn ? 'border-moon bg-moon-soft text-ink' : 'border-rule text-slate hover:text-ink'}`}
           >
@@ -330,6 +338,21 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
               <path d="M2.5 10h15M10 2.5c2.2 2.3 3.2 4.8 3.2 7.5s-1 5.2-3.2 7.5c-2.2-2.3-3.2-4.8-3.2-7.5s1-5.2 3.2-7.5z" />
             </svg>
             <span>Web{webOn ? ' on' : ''}</span>
+          </button>
+          <button
+            type="button"
+            aria-pressed={codeOn}
+            onClick={() => {
+              setCodeOn(!codeOn);
+              if (!codeOn) setWebOn(false);
+            }}
+            title={codeOn ? 'Python code is written, run with its tests in an offline sandbox on this computer, and fixed until the tests pass' : 'Code testing only when you ask for Python code ("write a Python function…")'}
+            className={`flex h-11 shrink-0 items-center gap-1.5 rounded-xl border px-3 text-sm ${codeOn ? 'border-moon bg-moon-soft text-ink' : 'border-rule text-slate hover:text-ink'}`}
+          >
+            <svg aria-hidden viewBox="0 0 20 20" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <path d="M7 5.5 2.5 10 7 14.5M13 5.5l4.5 4.5-4.5 4.5" />
+            </svg>
+            <span>Code{codeOn ? ' on' : ''}</span>
           </button>
           <label htmlFor="composer" className="sr-only">
             Message
@@ -345,7 +368,7 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
                 send();
               }
             }}
-            placeholder={webOn ? 'Ask anything: the web is searched first…' : 'Ask the pack…  (“search the web for …” or a link searches the web)'}
+            placeholder={webOn ? 'Ask anything: the web is searched first…' : codeOn ? 'Describe the Python code you need: it is tested before you see it…' : 'Ask the pack…  (“search the web for …” or a link searches the web)'}
             className="min-h-[2.75rem] flex-1 resize-none rounded-xl border border-rule bg-paper px-3 py-2 text-ink placeholder:text-slate focus:border-moon focus:outline-none"
           />
           {busy ? (
@@ -372,7 +395,18 @@ function WebSteps({ m, open, onToggle }: { m: Message; open: boolean; onToggle: 
   const steps = m.steps!;
   const pages = m.sources?.filter((s) => s.kind === 'page').length ?? 0;
   const failed = steps.some((s) => s.status === 'failed');
-  const summary = m.webQuery ? `Searched the web for “${m.webQuery}”` : 'Read the linked page';
+  const c = m.codeRun;
+  const summary = c
+    ? c.passed === null
+      ? 'Code not tested'
+      : c.untested
+        ? 'Code ran without errors (no tests)'
+        : c.passed
+          ? `Code tested: all ${c.testsTotal} tests passed${c.bestRound > 1 ? ` after ${c.bestRound - 1} fix${c.bestRound > 2 ? 'es' : ''}` : ''}`
+          : `Code tested: ${c.testsPassed} of ${c.testsTotal} tests pass after ${c.rounds} rounds`
+    : m.webQuery
+      ? `Searched the web for “${m.webQuery}”`
+      : 'Read the linked page';
   return (
     <div className="mb-3 border-l-2 border-moon pl-3 text-sm">
       {m.status !== 'streaming' && (

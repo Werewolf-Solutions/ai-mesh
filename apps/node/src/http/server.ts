@@ -39,6 +39,8 @@ import { planGeneration } from '../models/effort.js';
 import type { SplitLender, SplitTunnels } from '../split/split.js';
 import type { RewardsLedger, SignedSettlement } from '../rewards/ledger.js';
 import { research, wantsWeb, type AgentStep, type Source } from '../agent/research.js';
+import { codePipeline, resultNote, wantsCode, type CodeResult } from '../agent/code.js';
+import { runPython } from '../agent/sandbox.js';
 import { NoteKind, PACK_LIMITS, scrub } from '@werewolf-mesh/protocol';
 import { z } from 'zod';
 
@@ -276,7 +278,10 @@ export async function buildHttpServer(deps: HttpDeps): Promise<FastifyInstance> 
       return sendError(reply, new MeshError('payload_too_large', `messages total ${totalChars} chars; limit ${LIMITS.maxTotalChars}`));
     }
     // Web answers carry a long prompt (page text); unless the caller set a budget they get the longest allowed.
-    const wantsLong = r.mesh?.web === 'on' || (r.mesh?.web === 'auto' && wantsWeb([...r.messages].reverse().find((m) => m.role === 'user')?.content ?? ''));
+    // So do code answers (several rounds of write → test → fix).
+    const lastUserText = [...r.messages].reverse().find((m) => m.role === 'user')?.content ?? '';
+    const wantsLong =
+      r.mesh?.web === 'on' || (r.mesh?.web === 'auto' && wantsWeb(lastUserText)) || r.mesh?.code === 'on' || (r.mesh?.code === 'auto' && wantsCode(lastUserText));
     const deadlineMs = Math.min(r.mesh?.timeout_ms ?? (wantsLong ? cfg.timeouts.maxDeadlineMs : cfg.timeouts.defaultDeadlineMs), cfg.timeouts.maxDeadlineMs);
     const target = r.mesh?.target ?? 'auto';
     const prefer = (req.headers['x-mesh-prefer'] as string | undefined)?.slice(0, 128);
@@ -313,13 +318,27 @@ export async function buildHttpServer(deps: HttpDeps): Promise<FastifyInstance> 
       if (webMode === 'on') return sendError(reply, new MeshError('forbidden', "web research on this node is only for its operator: searches leave from the operator's own connection"));
       useWeb = false;
     }
+    // Code pipeline (docs/agents.md): write → test in the sandbox → fix, on this node.
+    const codeMode = r.mesh?.code ?? 'off';
+    const codeCfg = cfg.agent.code;
+    if (codeMode === 'on' && webMode === 'on') return sendError(reply, new MeshError('bad_request', 'mesh.code "on" and mesh.web "on" cannot be combined'));
+    let useCode = codeMode === 'on' || (codeMode === 'auto' && webMode !== 'on' && wantsCode(lastUser));
+    if (useCode && !codeCfg.enabled) {
+      if (codeMode === 'on') return sendError(reply, new MeshError('bad_request', 'the code sandbox is turned off on this node (agent.code.enabled)'));
+      useCode = false;
+    }
+    if (useCode && roleOf(req) !== 'admin' && !codeCfg.allowClients) {
+      if (codeMode === 'on') return sendError(reply, new MeshError('forbidden', "the code sandbox on this node is only for its operator: code runs on the operator's own computer"));
+      useCode = false;
+    }
+    if (useCode) useWeb = false;
 
     // Pack memory: give the model the most relevant anonymous notes as quoted context.
     let messages = r.messages;
     let packNotes: Array<{ id: string; title: string; solution: string; similarity: number }> = [];
     let web: { query: string | null; sources: Source[]; steps: AgentStep[] } | null = null;
     // Skipped for very long prompts: notes must not push a request over the 2,048-token budget.
-    if (!useWeb && deps.pack && r.mesh?.pack !== false && totalChars < 3000) {
+    if (!useWeb && !useCode && deps.pack && r.mesh?.pack !== false && totalChars < 3000) {
       const question = [...r.messages].reverse().find((m) => m.role === 'user')?.content ?? '';
       const found = await deps.pack.relevant(question).catch(() => []);
       if (found.length) {
@@ -434,6 +453,89 @@ export async function buildHttpServer(deps: HttpDeps): Promise<FastifyInstance> 
         reply.raw.end();
         return reply;
       }
+    }
+
+    if (useCode) {
+      // Room for a solution, its tests and an explanation, whatever the caller's max_tokens.
+      const codePlan = planGeneration(entry, r.reasoning_effort, Math.min(Math.max(plan.maxTokens, codeCfg.maxTokens), entry.serving.maxOutputTokens));
+      const steps: AgentStep[] = [];
+      const until = Date.now() + deadlineMs;
+      const used = { prompt: 0, completion: 0 };
+      let worker: { peerId: string; route: 'local' | 'remote'; attempts: AttemptRecord[] } | null = null;
+      let done: CodeResult;
+      const codeView = (x: CodeResult) => ({ passed: x.passed, untested: x.untested, rounds: x.rounds, bestRound: x.bestRound, testsPassed: x.testsPassed, testsTotal: x.testsTotal, failure: x.failure });
+      const codeInfo = (res: CodeResult | null) => ({
+        gatewayPeerId: deps.selfPeerId,
+        workerPeerId: worker?.peerId ?? null,
+        route: worker?.route ?? null,
+        attempts: worker?.attempts ?? [],
+        runtime: entry.family === 'external' ? ('external' as const) : deps.runtimeKind,
+        model: entry.id,
+        effort: codePlan.effort,
+        code: { steps, ...(res ? codeView(res) : {}) },
+      });
+      try {
+        done = await codePipeline(
+          r.messages,
+          {
+            maxRounds: codeCfg.maxRounds,
+            modelName: entry.displayName,
+            onStep: (st) => {
+              steps.push(st);
+              agentChunk({ step: st });
+            },
+            generate: async (msgs, signal) => {
+              let text = '';
+              const left = until - Date.now();
+              if (left < 1000) throw new MeshError('deadline_exceeded', 'the time budget ran out while writing the code');
+              // Later rounds go back to the same worker, which still holds the conversation in its cache.
+              const g = deps.gateway.execute(
+                { model: fp, messages: msgs, settings: { ...settings, maxTokens: codePlan.maxTokens, ...(codePlan.thinking ? { thinking: codePlan.thinking } : {}) }, deadlineMs: left, target, ...((worker?.peerId ?? prefer) ? { prefer: worker?.peerId ?? prefer } : {}) },
+                signal,
+              );
+              for await (const ev of g) {
+                if (ev.type === 'first_token' || ev.type === 'token') {
+                  if (ev.channel !== 'reasoning') text += ev.text;
+                } else {
+                  used.prompt += ev.usage.promptTokens;
+                  used.completion += ev.usage.completionTokens;
+                  worker = { peerId: ev.workerPeerId, route: ev.route, attempts: ev.attempts };
+                }
+              }
+              return text;
+            },
+            run: (program, signal) =>
+              runPython(program, { image: codeCfg.image, timeoutMs: codeCfg.timeoutMs, memoryMb: codeCfg.memoryMb, cpus: codeCfg.cpus, maxOutputBytes: 64 * 1024, signal }),
+          },
+          ctl.signal,
+        );
+      } catch (err) {
+        reply.raw.off('close', onClose);
+        if (ctl.signal.aborted) return reply;
+        const e = err instanceof MeshError ? err : new MeshError('tool_failed', `the code pipeline failed: ${(err as Error).message}`.slice(0, 300));
+        const g = err instanceof GatewayError ? err : null;
+        const info = { ...codeInfo(null), ...(g ? { workerPeerId: g.workerPeerId, route: g.route, attempts: g.attempts } : {}) };
+        if (!headersSent) return sendError(reply, e, { mesh: info } as Partial<ApiErrorBody['error']>);
+        await write(errorBody(e, { mesh: info }));
+        reply.raw.end();
+        return reply;
+      }
+      reply.raw.off('close', onClose);
+      const content = done.reply + resultNote(done);
+      const usage = { prompt_tokens: used.prompt, completion_tokens: used.completion, total_tokens: used.prompt + used.completion };
+      const w = worker as { peerId: string; route: 'local' | 'remote' } | null;
+      if (!r.stream) {
+        if (w) reply.header('x-mesh-worker', w.peerId).header('x-mesh-route', w.route);
+        reply.header('x-mesh-gateway', deps.selfPeerId).header('x-mesh-runtime', deps.runtimeKind);
+        return reply.send({ id, object: 'chat.completion', created, model: entry.id, choices: [{ index: 0, message: { role: 'assistant', content }, finish_reason: 'stop' }], usage, mesh: codeInfo(done) });
+      }
+      agentChunk({ code: codeView(done) });
+      openStream(w ? { 'x-mesh-worker': w.peerId, 'x-mesh-route': w.route } : {});
+      await write(chunk({ role: 'assistant', content }, null, { mesh: codeInfo(done) }));
+      await write(chunk({}, 'stop', { usage, mesh: codeInfo(done) }));
+      await write('[DONE]');
+      reply.raw.end();
+      return reply;
     }
 
     const gen = deps.gateway.execute({ model: fp, messages, settings, deadlineMs, target, ...(prefer ? { prefer } : {}) }, ctl.signal);

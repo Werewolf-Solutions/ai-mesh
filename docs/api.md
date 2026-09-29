@@ -39,7 +39,7 @@ The HTTP API is how browsers and clients reach a gateway. It is separate from th
 
 **Rejected with `400 unsupported`:**
 
-- `tools`, `tool_choice`, `functions`, `function_call`, `parallel_tool_calls` (the mesh runs its own tools; see `mesh.web`)
+- `tools`, `tool_choice`, `functions`, `function_call`, `parallel_tool_calls` (the mesh runs its own tools; see `mesh.web` and `mesh.code`)
 - `logprobs`, `top_logprobs`, `logit_bias`
 - `response_format`, `audio`, `modalities`, `prediction`, `web_search_options`
 
@@ -49,6 +49,7 @@ Image or other non-text content parts, and any unknown field, get `400 bad_reque
 
 - `"mesh": {"target": "auto" | "local" | "<peerId>", "timeout_ms": 1000–900000}`. `target` pins execution (no failover).
 - `"mesh": {"web": "on" | "auto" | "off"}`: web research before answering (see below). Default `off`.
+- `"mesh": {"code": "on" | "auto" | "off"}`: write Python, test it in the sandbox and fix it (see below). Default `off`. `code` and `web` cannot both be `"on"`.
 - Header `X-Mesh-Prefer: <peerId>`: try that worker first, with normal failover.
 
 **Non-streaming response:** the standard `chat.completion` body plus
@@ -88,6 +89,23 @@ With `"mesh": {"web": "on"}` the gateway searches the web, reads up to 2 pages a
 - **Failure during research:** before the stream opens, an ordinary `502 tool_failed`. After it opened, an error event with code `tool_failed` and no `[DONE]`. Nothing has been answered, so the client may simply ask again.
 - **Non-streaming:** `mesh.web` = `{query, sources, steps}` on the response.
 - **Timing:** unless `timeout_ms` is set, web requests get the maximum deadline (`timeouts.maxDeadlineMs`, 5 min).
+
+## Tested Python code
+
+With `"mesh": {"code": "on"}` the gateway asks the model for a solution and tests, runs them in its offline Python sandbox, and asks for a fix when they fail, up to 3 rounds. `"auto"` does this only when the last message asks for Python code ("write a Python function…"). How it works and the sandbox's limits are in [agents.md](agents.md#tested-python-code).
+
+- **Who may use it:** the node's operator. With a client token, `"on"` gets `403 forbidden` and `"auto"` answers normally, unless the operator set `agent.code.allowClients`.
+- **Streaming:** as for web research, the stream opens at the first step, with step chunks in `mesh.agent`. Step kinds: `write`, `test`, `fix`. Before the answer comes one chunk with the result:
+
+  ```json
+  {"mesh": {"agent": {"code": {"passed": true, "untested": false, "rounds": 2, "failure": null}}}}
+  ```
+
+  `passed` is `null` when nothing was tested (the model wrote no code, or the sandbox is unavailable). The answer (the model's last reply plus the node's one-line result note) then arrives in one content chunk, followed by the final chunk and `[DONE]`.
+- **Answer length:** each round gets at least `agent.code.maxTokens` (1,536) tokens, whatever `max_tokens` says, so there is room for a solution, tests and an explanation. `usage` adds up all rounds.
+- **Non-streaming:** `mesh.code` = `{steps, passed, untested, rounds, failure}` on the response.
+- **Failure:** as for web research, `tool_failed` (or the model error) before or inside the stream, without `[DONE]`.
+- **Timing:** unless `timeout_ms` is set, code requests get the maximum deadline, shared by all rounds.
 
 ## Summary scoring (used by the UI's reading test)
 

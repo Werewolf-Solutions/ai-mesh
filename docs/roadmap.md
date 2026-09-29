@@ -2,7 +2,7 @@
 
 v0.1 proved the network layer: authenticated membership, discovery, routing, failover and relays around one small, fully replicated model. v0.2 added a model catalog and effort levels, GPU workers, splitting a model across lent memory, external engines, WLF reward points and web research.
 
-Each section below says what is done and what is still missing. Agentic tools (the code pipeline next) are planned in [agents-design.md](agents-design.md).
+Each section below says what is done and what is still missing. Agent tools (web research, and Python code tested in a sandbox) are in [agents.md](agents.md); what comes next is in [agents-design.md](agents-design.md).
 
 ## 1. Splitting large models across machines, with redundant copies
 

@@ -65,6 +65,11 @@ export const ChatCompletionRequest = z.strictObject({
        * "auto" = only when the message asks for it (a link, "search the web…", news), "off" (default).
        */
       web: z.enum(['auto', 'on', 'off']).optional(),
+      /**
+       * Code pipeline on the gateway (docs/agents.md): "on" = write Python, test it in the sandbox and fix it,
+       * "auto" = only when the message asks for Python code, "off" (default). Cannot be combined with web "on".
+       */
+      code: z.enum(['auto', 'on', 'off']).optional(),
     })
     .optional(),
 });

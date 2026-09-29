@@ -15,7 +15,8 @@ import { FetchRefused, guardedFetch, isBlockedAddress, type FetchOptions } from 
 import { isIP } from 'node:net';
 
 export interface AgentStep {
-  kind: 'query' | 'search' | 'read' | 'answer';
+  /** Web research: query, search, read, answer. Code pipeline: write, test, fix. */
+  kind: 'query' | 'search' | 'read' | 'answer' | 'write' | 'test' | 'fix';
   status: 'running' | 'done' | 'failed';
   text: string;
 }

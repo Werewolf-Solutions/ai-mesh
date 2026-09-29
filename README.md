@@ -23,6 +23,7 @@ Each full node:
 - can **split one model across machines**: layers run partly on this node and partly in memory lent by trusted peers, through the mesh's encrypted connections, for models too big for any one computer ([docs/split.md](docs/split.md))
 - can **serve models from external engines** such as ds4-server, LM Studio or Ollama to the whole pack ([docs/engines.md](docs/engines.md))
 - can **search the web** before answering (*Web* button in the chat): a local SearXNG searches, the node reads up to two pages safely, and the model answers citing them ([docs/agents.md](docs/agents.md))
+- can **write Python and test it** before answering (*Code* button): the model writes the code and tests, your node runs them in an offline Docker sandbox and has the model fix failures ([docs/agents.md](docs/agents.md#tested-python-code))
 - shows its operator how hard the computer is working (*Computer* page, `./mesh resources`): CPU, RAM and GPU use, temperatures, fans, and how much of it Werewolf's own processes take. These readings stay on the node.
 - serves an OpenAI-compatible subset of the HTTP API and a UI with chat, a network dashboard, and a Tests page: a reading-speed test you can run against any node, with each summary scored against an ideal summary (optional `./mesh model download --scorer`), plus the published benchmarks
 
@@ -122,6 +123,7 @@ Full steps, including a second relay, are in [docs/operations.md](docs/operation
 | `./mesh split [status\|lend on PEER…\|lend off\|model ID PEER…]` | Lend memory to trusted peers, or split a model across lenders |
 | `./mesh engine [list\|add ID --url URL …\|remove ID]` | Serve a model from an OpenAI-compatible engine (ds4-server, LM Studio …) |
 | `./mesh search start\|stop\|status\|test "…"` | Run the local SearXNG search engine used for web research (Docker, 127.0.0.1 only) |
+| `./mesh code setup\|status\|test` | Install and check the offline Python sandbox used to test code answers (Docker) |
 | `./mesh resources [--watch]` | This computer's CPU, RAM, GPU, temperatures and fans, and what Werewolf uses |
 | `./mesh models [install\|unhost\|remove] ID` | List the model catalog; download and serve, stop, or delete a model |
 | `./mesh model download` / `import <file>` / `verify` `[--model ID]` | Get, import or re-verify a catalog model's GGUF |
@@ -155,7 +157,7 @@ What was run, and what could not be, is recorded in [docs/testing.md](docs/testi
 - [Sharing a GPU](docs/gpu.md)
 - [WLF rewards and their threat model](docs/rewards.md)
 - [Splitting a model across machines](docs/split.md) · [External engines](docs/engines.md)
-- [Web research](docs/agents.md) · [Tools and agents: design](docs/agents-design.md)
+- [Web research and tested code](docs/agents.md) · [Tools and agents: design](docs/agents-design.md)
 - [Pack memory](docs/pack-memory.md)
 - [Model provenance](docs/model.md)
 - [Benchmarks](docs/benchmarks.md) · [Testing](docs/testing.md) · [Roadmap](docs/roadmap.md) · [Progress checklist](PROGRESS.md)

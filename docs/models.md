@@ -115,7 +115,7 @@ Every node of a mesh should use the same catalog (the same repository version). 
 
 - Models needing a newer llama.cpp than the pinned build.
 - Vision/audio input: Gemma 4 and Qwen3.5 are multimodal, but the mesh passes text only.
-- Tool calling (planned in [agents-design.md](agents-design.md)).
+- Tool calling through the API. The node's own fixed pipelines (web research, tested code) are in [agents.md](agents.md).
 - Splitting one catalog model across several machines with redundant copies. Splitting across lent memory without redundancy works today, see [split.md](split.md) and the [roadmap](roadmap.md).
 
 GPU builds are covered in [gpu.md](gpu.md).

@@ -10,6 +10,9 @@ import { REPO_ROOT } from './version.js';
 
 const ms = (def: number, min = 1) => z.number().int().min(min).max(3_600_000).default(def);
 
+/** python:3.12-slim (3.12.14, 2026-09-19), multi-arch index digest. The code pipeline's sandbox (agent/sandbox.ts). */
+export const PYTHON_SANDBOX_IMAGE = 'python:3.12-slim@sha256:f77ac9e44ae96ef2c90b8053ea08c31f8be030f824196b0ae4db6d462c84e51f';
+
 export const NodeConfigSchema = z.strictObject({
   configVersion: z.literal(1).default(1),
   /** Shared by all members; NOT an authentication mechanism. */
@@ -208,6 +211,21 @@ export const NodeConfigSchema = z.strictObject({
           fetchTimeoutMs: ms(10_000, 1000),
           /** TESTS ONLY (needs MESH_ALLOW_FAKE_RUNTIME=1): let fetch_url reach 127.0.0.1 on any port. Other private addresses stay blocked. */
           unsafeAllowLoopback: z.boolean().default(false),
+        })
+        .prefault({}),
+      code: z
+        .strictObject({
+          enabled: z.boolean().default(true),
+          /** Let people using this node with a client token (not its operator) run code in this node's sandbox. */
+          allowClients: z.boolean().default(false),
+          /** Pinned by digest; `./mesh code setup` pulls it. Update deliberately, like deploy/searxng/image.json. */
+          image: z.string().min(1).default(PYTHON_SANDBOX_IMAGE),
+          maxRounds: z.number().int().min(1).max(5).default(3),
+          timeoutMs: ms(10_000, 1000),
+          memoryMb: z.number().int().min(64).max(2048).default(256),
+          cpus: z.number().min(0.1).max(4).default(1),
+          /** Answer length per round: a solution, its tests and an explanation. */
+          maxTokens: z.number().int().min(256).max(8192).default(1536),
         })
         .prefault({}),
     })
