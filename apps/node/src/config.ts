@@ -31,6 +31,11 @@ export const NodeConfigSchema = z.strictObject({
       relayReservations: z.number().int().min(0).max(4).default(2),
       /** Keep private/LAN/loopback addresses out of what we advertise to peers. */
       advertisePrivateAddrs: z.boolean().default(true),
+      /**
+       * The WebSocket listener sits behind a reverse proxy (e.g. nginx on 443): WebSocket peers
+       * arriving from loopback are remote users, not this machine (docs/operations.md).
+       */
+      websocketBehindProxy: z.boolean().default(false),
       maxConnections: z.number().int().min(4).max(1024).default(64),
       maxInboundStreamsPerProtocol: z.number().int().min(1).max(256).default(32),
     })
@@ -175,6 +180,38 @@ export const NodeConfigSchema = z.strictObject({
         .prefault({}),
     })
     .prefault({}),
+  /**
+   * Tools that run on this node for the person using it (docs/agents.md).
+   * Web research: search through a self-hosted SearXNG, then read pages with
+   * SSRF protection. Queries and page requests leave from this computer.
+   */
+  /** WLF reward points for serving other people's requests (docs/rewards.md). */
+  rewards: z
+    .strictObject({
+      enabled: z.boolean().default(true),
+      /** Peer ID whose signed settlements this node accepts (default: none; set it to the network's settler). */
+      settler: z.string().max(128).optional(),
+      /** TESTS ONLY (needs the fake runtime and MESH_ALLOW_FAKE_RUNTIME=1): fake output and loopback peers earn receipts. */
+      unsafeTestMode: z.boolean().default(false),
+    })
+    .prefault({}),
+  agent: z
+    .strictObject({
+      web: z
+        .strictObject({
+          enabled: z.boolean().default(true),
+          searxUrl: z.string().url().default('http://127.0.0.1:8888'),
+          /** Let people using this node with a client token (not its operator) search from this node's connection. */
+          allowClients: z.boolean().default(false),
+          maxPages: z.number().int().min(0).max(4).default(2),
+          maxPageBytes: z.number().int().min(10_000).max(10 * 2 ** 20).default(2 * 2 ** 20),
+          fetchTimeoutMs: ms(10_000, 1000),
+          /** TESTS ONLY (needs MESH_ALLOW_FAKE_RUNTIME=1): let fetch_url reach 127.0.0.1 on any port. Other private addresses stay blocked. */
+          unsafeAllowLoopback: z.boolean().default(false),
+        })
+        .prefault({}),
+    })
+    .prefault({}),
 });
 
 export type NodeConfig = z.infer<typeof NodeConfigSchema>;
@@ -226,6 +263,12 @@ export async function loadConfig(dataDir: string): Promise<NodeConfig> {
   const parsed = NodeConfigSchema.safeParse(applyEnv(raw as Record<string, any>));
   if (!parsed.success) {
     throw new Error(`Invalid ${FILES.config}: ${z.prettifyError(parsed.error)}`);
+  }
+  if (parsed.data.rewards.unsafeTestMode && (parsed.data.runtime.kind !== 'fake' || process.env.MESH_ALLOW_FAKE_RUNTIME !== '1')) {
+    throw new Error('rewards.unsafeTestMode is for tests only: it needs runtime.kind "fake" and MESH_ALLOW_FAKE_RUNTIME=1.');
+  }
+  if (parsed.data.agent.web.unsafeAllowLoopback && (parsed.data.runtime.kind !== 'fake' || process.env.MESH_ALLOW_FAKE_RUNTIME !== '1')) {
+    throw new Error('agent.web.unsafeAllowLoopback is for tests only: it needs runtime.kind "fake" and MESH_ALLOW_FAKE_RUNTIME=1.');
   }
   if (parsed.data.runtime.kind === 'fake' && process.env.MESH_ALLOW_FAKE_RUNTIME !== '1') {
     throw new Error('runtime.kind "fake" is a test-only deterministic adapter; set MESH_ALLOW_FAKE_RUNTIME=1 to use it explicitly.');

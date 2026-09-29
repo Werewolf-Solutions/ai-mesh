@@ -9,7 +9,7 @@ The UI has a **Model** picker and an **Effort** control above the message box.
   - If you are the **operator** of the gateway you're using (your own node), each entry offers **Download and run on this computer**, showing the download size and RAM needed and refusing if it won't fit.
   - Otherwise it says a node operator can add it.
 
-When you run a model, your computer serves it for **everyone in the pack**, and your node uses models other computers run. That is the resource sharing: every node that serves a model holds a full copy and adds capacity. Nothing is pooled or split across machines (see the [roadmap](roadmap.md)).
+When you run a model, your computer serves it for **everyone in the pack**, and your node uses models other computers run. That is the resource sharing: every node that serves a model holds a full copy and adds capacity. A model too big for one computer can also be **split** across memory that trusted peers lend ([split.md](split.md)).
 
 From the command line:
 

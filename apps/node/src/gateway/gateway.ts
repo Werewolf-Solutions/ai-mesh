@@ -110,6 +110,8 @@ export class Gateway {
       timeouts: { firstTokenMs: number; streamIdleMs: number; queueTimeoutMs: number };
       metrics: Metrics;
       log: Logger;
+      /** WLF rewards: another node completed one of this gateway's requests. */
+      onRemoteCompleted?: (worker: string, id: string, model: string, usage: Usage) => void;
     },
   ) {}
 
@@ -209,6 +211,7 @@ export class Gateway {
               const genMs = Date.now() - started;
               if (ev.usage.completionTokens > 0 && genMs > 0) metrics.sample('tokens_per_s', (ev.usage.completionTokens * 1000) / genMs);
               metrics.inc(cand.route === 'local' ? 'gateway_completed_local' : 'gateway_completed_remote');
+              if (cand.route === 'remote') this.deps.onRemoteCompleted?.(cand.peerId, `${requestId}/${attemptId}`, req.model, ev.usage);
               yield { type: 'done', finishReason: ev.finishReason, usage: ev.usage, workerPeerId: cand.peerId, route: cand.route, attempts, ...('timings' in ev && ev.timings ? { timings: ev.timings } : {}) };
               return;
             }

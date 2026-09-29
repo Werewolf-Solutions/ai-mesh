@@ -14,6 +14,7 @@ import { identify, identifyPush } from '@libp2p/identify';
 import { FaultTolerance, type ConnectionGater, type Libp2p, type PrivateKey } from '@libp2p/interface';
 import { ping } from '@libp2p/ping';
 import { tcp } from '@libp2p/tcp';
+import { webSockets } from '@libp2p/websockets';
 import { isLinkLocal, isLoopback, isPrivate } from '@libp2p/utils';
 import type { Multiaddr } from '@multiformats/multiaddr';
 import { createLibp2p } from 'libp2p';
@@ -83,7 +84,9 @@ export async function createHost(opts: {
       announce: p2p.announce,
       announceFilter: p2p.advertisePrivateAddrs ? (addrs) => addrs : (addrs) => addrs.filter(isPublicAddr),
     },
-    transports: [tcp(), circuitRelayTransport()],
+    // WebSockets: lets a public node sit behind a web server on port 443 (wss), and lets nodes on
+    // strict networks reach it. Listening on it is opt-in (a /ws listen address).
+    transports: [tcp(), webSockets(), circuitRelayTransport()],
     connectionEncrypters: [noise()],
     streamMuxers: [yamux()],
     connectionGater: opts.gater,

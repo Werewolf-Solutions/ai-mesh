@@ -6,7 +6,7 @@
  * This service never forwards work to another node. Both the local HTTP
  * gateway and the libp2p inference handler call it.
  */
-import { MeshError, type ChatMessage, type GenerationSettings } from '@werewolf-mesh/protocol';
+import { MeshError, type ChatMessage, type GenerationSettings, firstTokenAllowanceMs } from '@werewolf-mesh/protocol';
 import type { GenEvent, InferenceAdapter } from '../runtime/adapter.js';
 import { abortReason, deadlineTimer, linkedController, Watchdog } from '../util/abort.js';
 import type { Metrics } from '../metrics.js';
@@ -108,7 +108,8 @@ export class WorkerService {
               throw ctl.signal.aborted ? abortReason(ctl.signal) : err;
             }
             timings.queueMs = Date.now() - receivedAt;
-            dog.arm(t.firstTokenMs, () => new MeshError('first_token_timeout', `no token within ${t.firstTokenMs} ms`));
+            const allowance = firstTokenAllowanceMs(t.firstTokenMs, promptTokens);
+            dog.arm(allowance, () => new MeshError('first_token_timeout', `no token within ${allowance} ms (prompt: ${promptTokens} tokens)`));
             let first = true;
             try {
               for await (const ev of adapter.generate(job.messages, job.settings, ctl.signal)) {

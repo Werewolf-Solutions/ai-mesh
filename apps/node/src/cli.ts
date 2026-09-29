@@ -8,7 +8,7 @@ import { mkdir, readFile, rm, statfs, unlink, writeFile } from 'node:fs/promises
 import { cpus, freemem, totalmem } from 'node:os';
 import { basename, join, resolve } from 'node:path';
 import { createServer } from 'node:net';
-import { SseParser } from '@werewolf-mesh/protocol';
+import { SseParser, type SystemView } from '@werewolf-mesh/protocol';
 import { readAuthorized } from './admission.js';
 import { parseArgs, type Args } from './cli/args.js';
 import { generateCluster } from './cluster.js';
@@ -36,6 +36,25 @@ Setup
   models unhost ID [--data DIR]         Stop serving a model on this node (keeps the file)
   models remove ID                      Delete a model file that is not being served
   gpu [status|on [cuda|vulkan]|off]     Run this node's models on its GPU (shares it with the pack) or on the CPU
+  resources [--watch]                   This computer's CPU, RAM, GPU, temperatures, and what Werewolf uses
+  rewards [status]                      WLF reward points this node earned by serving other people (docs/rewards.md)
+  rewards export [--out FILE]           Write this node's signed receipts + vouches for settlement
+  rewards settle --epoch YYYY-MM-DD --in DIR [--seeds ID,ID] [--out FILE] [--param NAME=VALUE]... [--count-same-network]
+                                        (settler only) Verify bundles, apply the rules, sign the day's WLF allocations
+  rewards import FILE                   Import a settlement signed by this node's configured settler
+  rewards verify FILE --in DIR          Recompute a settlement from the same bundles: anyone can check the settler
+  engine list                           External engines this node serves (ds4-server, LM Studio, Ollama, vLLM …)
+  engine add ID --url URL --name NAME [--model M] [--context N] [--max-output N] [--thinking none|toggle|always]
+             [--thinking-control none|reasoning_effort|chat_template_kwargs] [--key-file F] [--license L] [--sha256 H]
+                                        Serve a model from an OpenAI-compatible engine through the mesh
+  engine remove ID                      Stop serving it and forget it
+  split [status]                        Splitting models across machines: what this node lends and borrows
+  split lend on PEER... [--gpu] | off   Lend this machine's memory (CPU RAM, or GPU with --gpu) to these peers
+  split model ID PEER... [--local-share 0.6] | --off
+                                        Split a hosted model across these lending peers. By default this node's
+                                        GPU (or RAM) is filled first and lenders get the rest
+  search start|stop|status              Run the local SearXNG search engine (Docker, 127.0.0.1 only) for web research
+  search test "query"                   Show what the node's web search returns for a query
   model download|import|verify --scorer Same, for the optional embedding model that scores summaries in the UI
 
 Node
@@ -393,6 +412,338 @@ async function gpuCmd(a: Args): Promise<void> {
   }
 }
 
+async function rewardsCmd(a: Args): Promise<void> {
+  const sub = a._[1] ?? 'status';
+  if (sub === 'status') {
+    const v: any = await adminFetch(a, '/admin/rewards');
+    out(v.enabled ? 'Earning: on (only for answers served to other people’s nodes, from outside your own network)' : 'Earning: off on this node');
+    out(`Settler: ${v.settler ?? 'not set (rewards.settler in node.json)'}`);
+    out(`Balance from settlements: ${v.balance.total} WLF${v.balance.epochs.length ? ` over ${v.balance.epochs.length} day(s)` : ''}`);
+    for (const e of v.epochs) out(`  ${e.epoch}: ${e.received} receipt(s) from ${e.requesters} requester(s), ${e.creditableTokens} tokens creditable${e.sameNetwork ? `, ${e.sameNetwork} from your own network (never credited)` : ''}`);
+    if (Object.keys(v.rejected).length) out(`Receipts refused since start: ${Object.entries(v.rejected).map(([k, n]) => `${k} ×${n}`).join(', ')}`);
+    return;
+  }
+  if (sub === 'export') {
+    const b = await adminFetch(a, '/admin/rewards/bundle');
+    const file = a.get('out') ?? `wlf-bundle-${(b as any).peer.slice(-8)}.json`;
+    await writeFile(file, JSON.stringify(b) + '\n', { mode: 0o600 });
+    out(`wrote ${file} (${(b as any).receipts.length} receipts). Send it to the settler.`);
+    return;
+  }
+  if (sub === 'import') {
+    const file = a._[2] ?? fail('usage: ./mesh rewards import FILE');
+    const e = await endpoint(a);
+    const r = await fetch(e.url + '/admin/rewards/settlement', { method: 'POST', headers: { authorization: `Bearer ${e.admin}`, 'content-type': 'application/json' }, body: await readFile(file, 'utf8') });
+    const j = (await r.json()) as any;
+    if (!r.ok) fail(j.error?.message ?? `HTTP ${r.status}`);
+    out(`settlement for ${j.epoch} imported: ${j.wlf} WLF for this node`);
+    return;
+  }
+  if (sub === 'verify') {
+    const file = a._[2] ?? fail('usage: ./mesh rewards verify SETTLEMENT --in DIR');
+    const dir = a.get('in') ?? fail('--in DIR (the bundles the settlement was made from) is required');
+    const signed = JSON.parse(await readFile(file, 'utf8')) as { body: any; settler: string; sig: string };
+    const { verifyBody } = await import('./rewards/ledger.js');
+    const { settle } = await import('./rewards/settle.js');
+    const { RewardsBundle } = await import('@werewolf-mesh/protocol');
+    out(`signature by ${signed.settler}: ${(await verifyBody(signed.settler, 'settlement', signed.body, signed.sig)) ? 'valid' : 'INVALID'}`);
+    const { readdir } = await import('node:fs/promises');
+    const bundles = [];
+    for (const f of (await readdir(dir)).filter((x) => x.endsWith('.json'))) {
+      const p = RewardsBundle.safeParse(JSON.parse(await readFile(join(dir, f), 'utf8')));
+      if (p.success) bundles.push(p.data);
+    }
+    const catalog = await loadCatalog(CATALOG_DIR());
+    const size = new Map(catalog.map((e) => [`${e.id}:sha256:${e.artifact.sha256}`, Math.max(0.1, e.artifact.sizeBytes / 2 ** 30)]));
+    const again = await settle({
+      epoch: signed.body.epoch,
+      bundles,
+      seeds: signed.body.seeds,
+      params: signed.body.params,
+      verifyBundle: (b) => verifyBody(b.peer, 'bundle', { v: b.v, peer: b.peer, epochs: b.epochs, receipts: b.receipts, vouches: b.vouches }, b.sig),
+      verifyReceipt: (s) => verifyBody(s.receipt.requester, 'receipt', s.receipt, s.sig),
+      modelWeight: (fp) => (/:sha256:0{64}$/.test(fp) ? (a.has('allow-test-models') ? 1 : null) : fp.includes(':ext:') ? 1 : (size.get(fp) ?? 1)),
+    });
+    const sameInputs = JSON.stringify(again.inputs) === JSON.stringify(signed.body.inputs);
+    const same = again.merkleRoot === signed.body.merkleRoot && again.pool === signed.body.pool;
+    out(sameInputs ? 'inputs: the same bundles' : `inputs differ: you have ${again.inputs.length} bundle(s), the settlement used ${signed.body.inputs.length}`);
+    out(same ? `result: identical (pool ${again.pool} WLF, root ${again.merkleRoot.slice(0, 16)}…)` : `result: DIFFERENT (recomputed pool ${again.pool} WLF vs ${signed.body.pool})`);
+    if (!same) process.exitCode = 1;
+    return;
+  }
+  if (sub !== 'settle') fail('usage: ./mesh rewards [status|export|settle|import|verify]');
+  const epoch = a.get('epoch') ?? fail('--epoch YYYY-MM-DD is required');
+  const dir = a.get('in') ?? fail('--in DIR (folder of bundles from ./mesh rewards export) is required');
+  const dd = dataDir(a);
+  const { loadIdentity } = await import('./identity.js');
+  const { settle } = await import('./rewards/settle.js');
+  const { verifyBody, signBody } = await import('./rewards/ledger.js');
+  const { RewardsBundle } = await import('@werewolf-mesh/protocol');
+  const id = await loadIdentity(dd);
+  const bundles = [];
+  const { readdir } = await import('node:fs/promises');
+  for (const f of (await readdir(dir)).filter((x) => x.endsWith('.json'))) {
+    const p = RewardsBundle.safeParse(JSON.parse(await readFile(join(dir, f), 'utf8')));
+    if (p.success) bundles.push(p.data);
+    else out(`skipped ${f}: not a rewards bundle`);
+  }
+  try {
+    const own = RewardsBundle.parse(await adminFetch(a, '/admin/rewards/bundle'));
+    if (!bundles.some((b) => b.peer === own.peer)) {
+      // Saved next to the others, so anyone given DIR can recompute exactly this settlement.
+      const f = join(dir, `settler-${own.peer.slice(-8)}.json`);
+      await writeFile(f, JSON.stringify(own) + '\n', { mode: 0o600 });
+      out(`added this node's own bundle to ${f}`);
+      bundles.push(own);
+    }
+  } catch {
+    /* settler node not running: its own receipts must be in DIR */
+  }
+  const catalog = await loadCatalog(CATALOG_DIR());
+  const size = new Map(catalog.map((e) => [`${e.id}:sha256:${e.artifact.sha256}`, Math.max(0.1, e.artifact.sizeBytes / 2 ** 30)]));
+  const testModels = a.has('allow-test-models');
+  // Parameter overrides (tuning, or a home test): recorded in the signed settlement for everyone to see.
+  const { DEFAULT_PARAMS } = await import('./rewards/settle.js');
+  const params: Record<string, number | boolean> = {};
+  for (const kv of a.all('param')) {
+    const [k, v] = kv.split('=');
+    if (!k || v === undefined || !(k in DEFAULT_PARAMS)) fail(`unknown --param ${kv} (known: ${Object.keys(DEFAULT_PARAMS).join(', ')})`);
+    params[k!] = v === 'true' ? true : v === 'false' ? false : Number(v);
+    if (typeof params[k!] === 'number' && !Number.isFinite(params[k!] as number)) fail(`--param ${kv}: not a number`);
+  }
+  if (a.has('count-same-network')) params.countSameNetwork = true;
+  if (Object.keys(params).length) out(`NOTE: non-default parameters (recorded in the settlement): ${JSON.stringify(params)}`);
+  const body = await settle({
+    epoch,
+    params,
+    bundles,
+    seeds: (a.get('seeds') ?? id.peerId).split(',').map((x) => x.trim()).filter(Boolean),
+    verifyBundle: (b) => verifyBody(b.peer, 'bundle', { v: b.v, peer: b.peer, epochs: b.epochs, receipts: b.receipts, vouches: b.vouches }, b.sig),
+    verifyReceipt: (s) => verifyBody(s.receipt.requester, 'receipt', s.receipt, s.sig),
+    modelWeight: (fp) => (/:sha256:0{64}$/.test(fp) ? (testModels ? 1 : null) : fp.includes(':ext:') ? 1 : (size.get(fp) ?? 1)),
+  });
+  const signed = { body, settler: id.peerId, sig: await signBody(id.privateKey, 'settlement', body) };
+  const file = a.get('out') ?? `wlf-settlement-${epoch}.json`;
+  await writeFile(file, JSON.stringify(signed, null, 1) + '\n');
+  out(`${epoch}: ${body.qualifiedNodes} qualified node(s), ${body.halvings} halving(s), pool ${body.pool} WLF`);
+  for (const x of body.allocations) out(`  ${x.peer}  ${x.wlf} WLF  (${x.receipts} receipts from ${x.requesters} requesters)`);
+  for (const [k, n] of Object.entries(body.excluded)) out(k.startsWith('note: ') ? `  ${k} ×${n}` : `  excluded: ${k} ×${n}`);
+  out(`wrote ${file}; nodes import it with ./mesh rewards import ${file}. Share it together with ${dir} so anyone can run ./mesh rewards verify.`);
+}
+
+async function engineCmd(a: Args): Promise<void> {
+  const sub = a._[1] ?? 'list';
+  const e = await endpoint(a);
+  const call = async (method: string, path: string, body?: unknown) => {
+    const r = await fetch(e.url + path, { method, headers: { authorization: `Bearer ${e.admin}`, ...(body ? { 'content-type': 'application/json' } : {}) }, ...(body ? { body: JSON.stringify(body) } : {}) });
+    const j = (await r.json()) as any;
+    if (!r.ok) fail(j.error?.message ?? `HTTP ${r.status}`);
+    return j;
+  };
+  if (sub === 'list') {
+    const v = await call('GET', '/admin/engines');
+    if (!v.engines.length) out('No external engines. Add one: ./mesh engine add ID --url http://127.0.0.1:8000 --name "…"');
+    for (const x of v.engines) out(`${x.id}  ${x.name}  ${x.url}${x.model ? ` (${x.model})` : ''}\n  ${x.status?.detail ?? 'not started'}\n  fingerprint ${x.fingerprint}${x.weightsSha256 ? '' : ' (declared, not verified)'}`);
+    return;
+  }
+  if (sub === 'remove') {
+    const id = a._[2] ?? fail('usage: ./mesh engine remove ID');
+    await call('DELETE', `/admin/engines/${id}`);
+    out(`${id} is no longer served`);
+    return;
+  }
+  if (sub !== 'add') fail('usage: ./mesh engine [list | add ID --url URL --name NAME … | remove ID]');
+  const id = a._[2] ?? fail('usage: ./mesh engine add ID --url URL --name NAME');
+  const num = (k: string) => (a.get(k) !== undefined ? Number(a.get(k)) : undefined);
+  const body = Object.fromEntries(
+    Object.entries({
+      id,
+      url: a.get('url') ?? fail('--url is required (ds4-server listens on http://127.0.0.1:8000)'),
+      name: a.get('name') ?? id,
+      model: a.get('model'),
+      contextTokens: num('context'),
+      maxOutputTokens: num('max-output'),
+      thinking: a.get('thinking'),
+      thinkingControl: a.get('thinking-control'),
+      apiKeyFile: a.get('key-file') ? resolve(a.get('key-file')!) : undefined,
+      license: a.get('license'),
+      weightsSha256: a.get('sha256'),
+    }).filter(([, v]) => v !== undefined),
+  );
+  const r = await call('POST', '/admin/engines', body);
+  out(r.status?.ready ? `${id}: ${r.status.detail}. The pack can now use it.` : `${id} added, but the engine is not reachable yet: ${r.status?.detail ?? 'unknown'}. The node keeps checking every 10 s.`);
+}
+
+async function splitCmd(a: Args): Promise<void> {
+  const sub = a._[1] ?? 'status';
+  const e = await endpoint(a);
+  const post = async (path: string, body: unknown) => {
+    const r = await fetch(e.url + path, { method: 'POST', headers: { authorization: `Bearer ${e.admin}`, 'content-type': 'application/json' }, body: JSON.stringify(body) });
+    const j = (await r.json()) as any;
+    if (!r.ok) fail(j.error?.message ?? `HTTP ${r.status}`);
+    return j;
+  };
+  const resolvePeer = (x: string) => x; // peer IDs as given (see ./mesh peers list)
+  if (sub === 'lend') {
+    const onoff = a._[2];
+    if (onoff === 'off') {
+      await post('/admin/split/lend', { enabled: false });
+      out('This node no longer lends its memory.');
+      return;
+    }
+    if (onoff !== 'on') fail('usage: ./mesh split lend on PEER... [--gpu] | off');
+    const peers = a._.slice(3).map(resolvePeer);
+    if (!peers.length) fail('name the peers allowed to use this machine (./mesh peers list)');
+    const v = await post('/admin/split/lend', { enabled: true, peers, device: a.has('gpu') ? 'gpu' : 'cpu' });
+    out(`${v.detail}.`);
+    out('They can now place part of a model in this machine\'s memory. Only lend to machines you trust fully (docs/split.md).');
+    return;
+  }
+  if (sub === 'model') {
+    const id = a._[2] ?? fail('usage: ./mesh split model ID PEER... | --off');
+    const peers = a.has('off') ? [] : a._.slice(3).map(resolvePeer);
+    if (!a.has('off') && !peers.length) fail('name the lending peers, or --off to run the model on this node only');
+    const share = a.get('local-share');
+    await post(`/admin/models/${id}/split`, { peers, ...(share !== undefined ? { localShare: Number(share) } : {}) });
+    out(peers.length ? `restarting ${id} split across ${peers.length} other node(s)…` : `restarting ${id} on this node only…`);
+    for (let i = 0; i < 180; i++) {
+      await new Promise((r) => setTimeout(r, 1000));
+      const st: any = await adminFetch(a, '/admin/status');
+      const m = st.models.find((x: any) => x.id === id);
+      if (m?.state === 'serving' && !/starting/.test(m.detail)) {
+        out(m.detail);
+        return;
+      }
+      if (m?.state === 'failed') fail(m.detail);
+    }
+    fail('still starting; check ./mesh split status');
+  }
+  if (sub !== 'status') fail('usage: ./mesh split [status | lend on PEER... [--gpu] | lend off | model ID PEER... | model ID --off]');
+  const v: any = await adminFetch(a, '/admin/split');
+  out(`Lending: ${v.lend.enabled ? `${v.lend.detail}${v.lend.running ? '' : ' (not running)'}` : 'off'}`);
+  if (v.lend.enabled) out(`  allowed: ${v.lend.peers.join(', ') || 'nobody'}; tunnels open ${v.lend.tunnels.active}, total ${v.lend.tunnels.total}, refused ${v.lend.tunnels.refused}`);
+  out('Peers:');
+  for (const p of v.borrow.peers) out(`  ${p.peerId}${p.label ? ` (${p.label})` : ''}: ${p.lends ? 'lends memory' : p.reason}`);
+  out(v.models.length ? 'Split models:' : 'No model is split.');
+  for (const m of v.models) out(`  ${m.id} across ${m.split.join(', ')}`);
+}
+
+const SEARX_CONTAINER = 'werewolf-searxng';
+
+async function searchCmd(a: Args): Promise<void> {
+  const sub = a._[1] ?? 'status';
+  const cfg = await loadConfig(dataDir(a)).catch(() => null);
+  const searxUrl = cfg?.agent.web.searxUrl ?? 'http://127.0.0.1:8888';
+  const docker = (args: string[]) => spawnSync('docker', args, { encoding: 'utf8' });
+  const probe = async () => {
+    try {
+      const r = await fetch(`${searxUrl}/search?q=wolf&format=json`, { signal: AbortSignal.timeout(8000) });
+      return r.ok ? 'ok' : `HTTP ${r.status}`;
+    } catch (e) {
+      return (e as Error).message;
+    }
+  };
+  if (sub === 'status') {
+    const ps = docker(['ps', '-a', '--filter', `name=^${SEARX_CONTAINER}$`, '--format', '{{.Status}}']);
+    out(`container: ${ps.status !== 0 ? 'docker not available' : ps.stdout.trim() || 'not created (./mesh search start)'}`);
+    out(`search engine at ${searxUrl}: ${await probe()}`);
+    return;
+  }
+  if (sub === 'stop') {
+    docker(['rm', '-f', SEARX_CONTAINER]);
+    out('search engine stopped');
+    return;
+  }
+  if (sub === 'test') {
+    const q = a._.slice(2).join(' ') || fail('usage: ./mesh search test "query"');
+    const { searxSearch } = await import('./agent/research.js');
+    const res = await searxSearch(searxUrl, q).catch((e: Error) => fail(e.message));
+    out(res.length ? res.map((r, i) => `${i + 1}. ${r.title}\n   ${r.url}\n   ${r.snippet.slice(0, 160)}`).join('\n') : 'no results');
+    return;
+  }
+  if (sub !== 'start') fail('usage: ./mesh search [start|stop|status|test "query"]');
+  const u = new URL(searxUrl);
+  if (!['127.0.0.1', 'localhost'].includes(u.hostname)) fail(`agent.web.searxUrl is ${searxUrl}; ./mesh search start only runs a local engine on 127.0.0.1`);
+  const port = u.port || '80';
+  const pin = JSON.parse(await readFile(join(REPO_ROOT, 'deploy/searxng/image.json'), 'utf8')) as { image: string; version: string };
+  const secretFile = join(REPO_ROOT, '.cache/searxng/secret');
+  let secret = (await readFile(secretFile, 'utf8').catch(() => '')).trim();
+  if (!secret) {
+    const { randomBytes } = await import('node:crypto');
+    secret = randomBytes(32).toString('hex');
+    await mkdir(join(REPO_ROOT, '.cache/searxng'), { recursive: true });
+    await atomicWriteFile(secretFile, secret + '\n');
+  }
+  docker(['rm', '-f', SEARX_CONTAINER]);
+  const run = docker([
+    'run', '-d', '--name', SEARX_CONTAINER, '--restart', 'unless-stopped',
+    '-p', `127.0.0.1:${port}:8080`,
+    '-v', `${join(REPO_ROOT, 'deploy/searxng/settings.yml')}:/etc/searxng/settings.yml:ro`,
+    '-e', `SEARXNG_SECRET=${secret}`,
+    '--cap-drop', 'ALL', '--cap-add', 'CHOWN', '--cap-add', 'SETGID', '--cap-add', 'SETUID',
+    '--security-opt', 'no-new-privileges',
+    '--memory', '512m',
+    pin.image,
+  ]);
+  if (run.status !== 0) fail(`docker run failed: ${run.stderr.trim()}`);
+  out(`starting SearXNG ${pin.version} on ${searxUrl} (only this computer can reach it)…`);
+  for (let i = 0; i < 60; i++) {
+    await new Promise((r) => setTimeout(r, 1000));
+    if ((await probe()) === 'ok') {
+      out('search engine ready. Try: ./mesh search test "werewolf"');
+      return;
+    }
+  }
+  fail(`the search engine did not answer; see: docker logs ${SEARX_CONTAINER}`);
+}
+
+async function resourcesCmd(a: Args): Promise<void> {
+  const { ResourceMonitor } = await import('./system/resources.js');
+  let local: InstanceType<typeof ResourceMonitor> | undefined;
+  const read = async (): Promise<{ v: SystemView; live: boolean }> => {
+    try {
+      return { v: (await adminFetch(a, '/admin/system')) as SystemView, live: true };
+    } catch {
+      local ??= new ResourceMonitor({ diskPath: dataDir(a), runtimes: () => [] });
+      return { v: await local.snapshot(), live: false };
+    }
+  };
+  const mb = (n: number | null) => (n === null ? '?' : n >= 1024 ? `${(n / 1024).toFixed(1)} GB` : `${n} MB`);
+  const deg = (c: number | null) => (c === null ? '' : `, ${Math.round(c)} °C`);
+  const n = (x: number | null, unit = '') => (x === null ? '?' : `${Math.round(x)}${unit}`);
+  const show = ({ v, live }: { v: SystemView; live: boolean }) => {
+    const lines = [
+      `CPU     ${n(v.cpu.usagePct, '%')} of ${v.cpu.threads} threads${deg(v.cpu.tempC)}  (${v.cpu.model}${v.cpu.freqMHz ? `, ${v.cpu.freqMHz} MHz` : ''}; load ${v.cpu.load.join(' ')})`,
+      `Memory  ${mb(v.memory.usedMB)} of ${mb(v.memory.totalMB)} used, ${mb(v.memory.availableMB)} available${v.memory.swapUsedMB ? `; swap ${mb(v.memory.swapUsedMB)} used` : ''}`,
+      ...v.gpus.map(
+        (g) =>
+          `GPU     ${n(g.utilPct, '%')}  ${g.name}: ${mb(g.memUsedMB)} of ${mb(g.memTotalMB)} memory${deg(g.tempC)}${g.powerW !== null ? `, ${Math.round(g.powerW)} W${g.powerLimitW ? ` of ${Math.round(g.powerLimitW)}` : ''}` : ''}${g.fanPct !== null ? `, fan ${g.fanPct}%` : ''}`,
+      ),
+      ...(v.disk ? [`Disk    ${mb(v.disk.freeMB)} free of ${mb(v.disk.totalMB)} (${v.disk.path})`] : []),
+      ...(v.sensors.fans.length ? [`Fans    ${v.sensors.fans.map((f) => `${f.label} ${f.rpm} rpm`).join(', ')}`] : []),
+      '',
+      live ? 'Werewolf uses:' : 'Node not running; Werewolf uses nothing.',
+      ...(live
+        ? [
+            `  node process        ${mb(v.mesh.node.rssMB).padStart(8)} RAM  ${n(v.mesh.node.cpuPct, '%').padStart(5)} CPU`,
+            ...v.mesh.runtimes.map((r) => `  ${r.name.slice(0, 18).padEnd(18)}  ${mb(r.rssMB).padStart(8)} RAM  ${n(r.cpuPct, '%').padStart(5)} CPU${r.gpuMemMB !== null ? `  ${mb(r.gpuMemMB)} GPU memory` : ''}  (${r.accel})`),
+          ]
+        : []),
+    ];
+    return lines.join('\n');
+  };
+  if (!a.has('watch')) {
+    out(show(await read()));
+    return;
+  }
+  // CPU % of one thread can exceed 100 per process: 400% = four threads busy.
+  while (true) {
+    const text = show(await read());
+    process.stdout.write('\x1b[H\x1b[2J' + text + '\n\n(refreshes every 2 s; Ctrl-C to stop)\n');
+    await new Promise((r) => setTimeout(r, 2000));
+  }
+}
+
 async function adminFetch(a: Args, path: string, method = 'GET'): Promise<unknown> {
   const e = await endpoint(a);
   const r = await fetch(e.url + path, { method, headers: { authorization: `Bearer ${e.admin}` }, signal: AbortSignal.timeout(5000) });
@@ -575,8 +926,12 @@ async function chat(a: Args): Promise<void> {
 // ------------------------------------------------------------------ start / stop
 async function start(a: Args): Promise<void> {
   const dir = dataDir(a);
-  await loadConfig(dir); // validate early with a clear error
+  const cfg = await loadConfig(dir); // validate early with a clear error
   const main = join(REPO_ROOT, 'apps/node/dist/main.js');
+  // A node started in the foreground has no pid file; its HTTP port tells us it is there.
+  const host = cfg.http.host === '0.0.0.0' ? '127.0.0.1' : cfg.http.host.includes(':') ? `[${cfg.http.host}]` : cfg.http.host;
+  const live = await fetch(`http://${host}:${cfg.http.port}/health/live`, { signal: AbortSignal.timeout(1500) }).then((r) => r.ok, () => false);
+  if (live) fail(`a node is already running on ${host}:${cfg.http.port} (started in another terminal?). Stop it first.`);
   if (!a.has('detach')) {
     const child = spawn(process.execPath, [main, '--data', dir], { stdio: 'inherit' });
     for (const sig of ['SIGINT', 'SIGTERM', 'SIGHUP'] as const) process.on(sig, () => child.kill(sig));
@@ -593,6 +948,18 @@ async function start(a: Args): Promise<void> {
   closeSync(log);
   child.unref();
   await writeFile(pidFile, String(child.pid), { mode: 0o600 });
+  // Catch start-up failures (port taken, bad config) instead of leaving a dead pid behind.
+  const exited = await new Promise<number | null | false>((res) => {
+    const t = setTimeout(() => res(false), 3000);
+    child.once('exit', (code) => {
+      clearTimeout(t);
+      res(code);
+    });
+  });
+  if (exited !== false) {
+    await unlink(pidFile).catch(() => undefined);
+    fail(`the node stopped during start-up (exit code ${exited}); see ${join(dir, 'node.log')}`);
+  }
   out(`started pid ${child.pid}; log: ${join(dir, 'node.log')}`);
 }
 
@@ -687,7 +1054,7 @@ async function clusterCmd(a: Args): Promise<void> {
 
 // ------------------------------------------------------------------ main
 async function main(): Promise<void> {
-  const a = parseArgs(process.argv.slice(2), ['detach', 'relay-server', 'no-relays', 'docker', 'fake', 'yes', 'no-stream', 'scorer']);
+  const a = parseArgs(process.argv.slice(2), ['detach', 'relay-server', 'no-relays', 'docker', 'fake', 'yes', 'no-stream', 'scorer', 'watch', 'gpu', 'off', 'allow-test-models', 'count-same-network']);
   const cmd = a._[0];
   switch (cmd) {
     case 'doctor':
@@ -701,6 +1068,17 @@ async function main(): Promise<void> {
       return modelsCmd(a);
     case 'gpu':
       return gpuCmd(a);
+    case 'resources':
+      return resourcesCmd(a);
+    case 'search':
+      return searchCmd(a);
+    case 'split':
+      return splitCmd(a);
+    case 'engine':
+    case 'engines':
+      return engineCmd(a);
+    case 'rewards':
+      return rewardsCmd(a);
     case 'init':
       return init(a);
     case 'join-info': {

@@ -2,6 +2,7 @@ import type { CatalogModelView } from '@werewolf-mesh/protocol';
 import { useCallback, useEffect, useState } from 'react';
 import { gb, ramGb, useCatalog } from '../models';
 import type { Gateway } from '../store';
+import { LendCard, SplitModel, useSplit } from './SplitControls';
 
 const STATE_TEXT: Record<string, string> = {
   serving: 'Running on this computer',
@@ -16,6 +17,7 @@ const STATE_TEXT: Record<string, string> = {
 
 export function ModelsView({ gateways }: { gateways: Gateway[] }) {
   const cat = useCatalog(gateways[0], 2500);
+  const split = useSplit(gateways[0], !!cat.isOperator);
   const [err, setErr] = useState<string | null>(null);
   const [confirmDelete, setConfirmDelete] = useState<string | null>(null);
   const run = async (fn: () => Promise<unknown>) => {
@@ -36,6 +38,7 @@ export function ModelsView({ gateways }: { gateways: Gateway[] }) {
           your computer runs a model, anyone in the pack can use it through their own node, and your node can use models other computers run.
         </p>
         {cat.isOperator && <GpuCard gateway={gateways[0]} onChanged={() => void cat.refresh()} />}
+        {cat.isOperator && <LendCard split={split} />}
         {!cat.isOperator && cat.models && (
           <p className="mt-3 rounded-lg border border-rule bg-sheet px-4 py-3 text-sm text-slate">
             You are viewing another operator's gateway, so you can see what the pack runs but not add models here. To run a model on your own computer, open your own
@@ -52,6 +55,11 @@ export function ModelsView({ gateways }: { gateways: Gateway[] }) {
                 <h2 className="font-display text-xl">
                   {m.name}
                   {m.thinking !== 'none' && <span className="ml-2 rounded bg-moon-soft px-1.5 align-middle font-sans text-xs">thinks</span>}
+                  {m.family === 'external' && (
+                    <span className="ml-2 rounded border border-rule px-1.5 align-middle font-sans text-xs text-slate" title="Served by another inference server (e.g. ds4-server). Declared by its operator; the mesh has not verified the model file.">
+                      external engine · not verified
+                    </span>
+                  )}
                 </h2>
                 <span className="num text-sm text-slate">
                   {m.available.nodes > 0 ? `served by ${m.available.nodes} node${m.available.nodes > 1 ? 's' : ''} you can reach` : 'not running in the pack'}
@@ -79,6 +87,7 @@ export function ModelsView({ gateways }: { gateways: Gateway[] }) {
                 </div>
               </dl>
               {cat.isOperator && m.local && <LocalControls m={m} run={run} cat={cat} confirmDelete={confirmDelete} setConfirmDelete={setConfirmDelete} />}
+              {cat.isOperator && m.local && (m.local.state === 'serving' || m.local.state === 'installed' || m.local.state === 'failed' || m.local.split) && <SplitModel m={m} split={split} />}
             </li>
           ))}
         </ul>

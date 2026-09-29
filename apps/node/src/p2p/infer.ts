@@ -24,6 +24,7 @@ import {
   type FinishReason,
   type GenerationSettings,
   type Usage,
+  firstTokenAllowanceMs,
 } from '@werewolf-mesh/protocol';
 import type { Admission } from '../admission.js';
 import type { NodeConfig } from '../config.js';
@@ -49,6 +50,8 @@ export class InferHandler {
       cfg: NodeConfig;
       metrics: Metrics;
       log: Logger;
+      /** WLF rewards: a job for another node finished (called before 'completed' is sent). */
+      onServed?: (origin: string, id: string, model: string, usage: Usage) => void;
     },
   ) {}
 
@@ -127,7 +130,10 @@ export class InferHandler {
     try {
       for await (const ev of job.run(ctl.signal)) {
         if (ev.type === 'token') await fs.write({ v: PROTOCOL_VERSION, type: 'token', seq: seq++, text: ev.text, ...(ev.channel ? { channel: ev.channel } : {}) });
-        else await fs.write({ v: PROTOCOL_VERSION, type: 'completed', finishReason: ev.finishReason, usage: ev.usage, timings: job.timings });
+        else {
+          this.deps.onServed?.(remote, `${req.requestId}/${req.attemptId}`, req.model, ev.usage);
+          await fs.write({ v: PROTOCOL_VERSION, type: 'completed', finishReason: ev.finishReason, usage: ev.usage, timings: job.timings });
+        }
       }
       metrics.inc('p2p_infer_completed');
     } catch (err) {
@@ -210,7 +216,7 @@ export class InferClient {
       if (first.workerPeerId !== peerId) throw new ProtocolError('accepted by unexpected worker identity');
       yield { type: 'accepted', queuePosition: first.queuePosition, promptTokens: first.promptTokens };
 
-      dog.arm(cfg.worker.queueTimeoutMs + cfg.timeouts.firstTokenMs, () => new MeshError('first_token_timeout', 'no first token from worker in time'));
+      dog.arm(cfg.worker.queueTimeoutMs + firstTokenAllowanceMs(cfg.timeouts.firstTokenMs, first.promptTokens), () => new MeshError('first_token_timeout', 'no first token from worker in time'));
       let expectSeq = 0;
       while (true) {
         const f = await this.read(fs, ctl.signal);

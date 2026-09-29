@@ -115,4 +115,8 @@ export class Admission {
   list(): string[] {
     return [...this.entries.keys()];
   }
+
+  labelOf(peerId: string): string | null {
+    return this.entries.get(peerId)?.label ?? null;
+  }
 }

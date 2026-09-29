@@ -17,10 +17,12 @@ export interface RuntimeStatus {
  * `generate` must stop work in the underlying runtime when `signal` aborts.
  */
 export interface InferenceAdapter {
-  readonly kind: 'llama.cpp' | 'fake';
+  readonly kind: 'llama.cpp' | 'fake' | 'external';
   start(): Promise<void>;
   stop(): Promise<void>;
   status(): RuntimeStatus;
+  /** OS process ID of the runtime, when it runs as a child process of this node. */
+  pid?(): number | undefined;
   /** Exact prompt token count after applying the model's chat template. */
   countPromptTokens(messages: ChatMessage[], signal?: AbortSignal): Promise<number>;
   generate(messages: ChatMessage[], settings: GenerationSettings, signal: AbortSignal): AsyncIterable<GenEvent>;

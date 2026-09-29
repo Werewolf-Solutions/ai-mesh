@@ -1,0 +1,5 @@
+{
+  "image": "searxng/searxng@sha256:eb2a404db174d33a04cd9f2e519bcae2ca722a58923510652cc1314be94e8e63",
+  "version": "2026.9.29-f5035873a",
+  "note": "Pinned by digest. Update deliberately: docker pull searxng/searxng:latest, check it, then put the new RepoDigest here."
+}

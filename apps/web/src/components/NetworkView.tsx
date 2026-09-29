@@ -1,7 +1,7 @@
 import type { MetricsView, NodeStatusView, PeerView } from '@werewolf-mesh/protocol';
 import { useEffect, useState } from 'react';
 import type { Gateway } from '../store';
-import { hueFor, Moon } from './Moon';
+import { Moon } from './Moon';
 
 interface Snapshot {
   status: NodeStatusView;
@@ -55,6 +55,17 @@ const uptime = (n: number) => {
 };
 const median = (a: number[]) => (a.length ? [...a].sort((x, y) => x - y)[Math.floor(a.length / 2)]! : null);
 
+function ConnectionStatus({ connected, current = true }: { connected: boolean; current?: boolean }) {
+  const label = !current ? 'Unknown' : connected ? 'Connected' : 'Not connected';
+  const color = !current ? 'bg-slate' : connected ? 'bg-pine' : 'bg-blood';
+  return (
+    <span className="inline-flex items-center gap-1.5 whitespace-nowrap">
+      <span aria-hidden className={`inline-block size-2.5 rounded-full ${color}`} />
+      {label}
+    </span>
+  );
+}
+
 export function NetworkView({ snap, error, gateway }: { snap: Snapshot | null; error: string | null; gateway: Gateway | undefined }) {
   if (!gateway) return null;
   if (!snap) return <p className="p-8 text-slate">{error ?? 'Loading…'}</p>;
@@ -72,11 +83,15 @@ export function NetworkView({ snap, error, gateway }: { snap: Snapshot | null; e
           <p className="mt-1 max-w-[70ch] text-slate">
             A local, partial view from the gateway at {new URL(gateway.url).host}. Other nodes may see a different network. Updated every 3 seconds.
           </p>
-          {error && <p className="mt-2 text-sm text-blood">Last refresh failed: {error}</p>}
+          {error ? (
+            <p className="mt-2 text-sm text-blood" role="status">Live status unknown. Last update {new Date(snap.at).toLocaleTimeString()}. Refresh failed: {error}</p>
+          ) : (
+            <p className="mt-2 text-xs text-slate" role="status">Live status · updated {new Date(snap.at).toLocaleTimeString()}</p>
+          )}
         </header>
 
         <div className="grid gap-8 lg:grid-cols-[minmax(0,1fr)_minmax(0,1.1fr)]">
-          <PackRing self={s} selfLoad={selfLoad} peers={peers} />
+          <PackRing self={s} selfLoad={selfLoad} peers={peers} current={!error} />
           <section aria-labelledby="this-node">
             <h2 id="this-node" className="font-display text-xl">This node</h2>
             <dl className="num mt-3 grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-sm">
@@ -131,7 +146,7 @@ export function NetworkView({ snap, error, gateway }: { snap: Snapshot | null; e
                 <thead className="text-slate">
                   <tr className="border-b border-rule">
                     <th className="py-2 pr-4 font-normal">Node</th>
-                    <th className="py-2 pr-4 font-normal">Link</th>
+                    <th className="py-2 pr-4 font-normal">Connection</th>
                     <th className="py-2 pr-4 font-normal">Can serve</th>
                     <th className="py-2 pr-4 font-normal">Models</th>
                     <th className="py-2 pr-4 font-normal">Working / waiting</th>
@@ -149,7 +164,10 @@ export function NetworkView({ snap, error, gateway }: { snap: Snapshot | null; e
                           {p.label ?? `…${p.peerId.slice(-6)}`}
                         </span>
                       </td>
-                      <td className="py-2 pr-4">{p.connected ? (p.relayed ? 'via relay' : 'direct') : 'not connected'}</td>
+                      <td className="py-2 pr-4">
+                        <ConnectionStatus connected={p.connected} current={!error} />
+                        {!error && p.connected && <span className="ml-1 text-xs text-slate">({p.relayed ? 'via relay' : 'direct'})</span>}
+                      </td>
                       <td className={`py-2 pr-4 ${p.available ? 'text-pine' : 'text-slate'}`}>
                         {p.available ? 'yes' : !p.connected ? 'no' : !p.modelCompatible ? 'different model' : p.state === 'draining' ? 'draining' : 'no'}
                       </td>
@@ -178,13 +196,13 @@ export function NetworkView({ snap, error, gateway }: { snap: Snapshot | null; e
 }
 
 /** The gateway in the centre, each authorised peer around it; solid = direct link, dashed = through a relay. */
-function PackRing({ self, selfLoad, peers }: { self: NodeStatusView; selfLoad: number; peers: PeerView[] }) {
+function PackRing({ self, selfLoad, peers, current }: { self: NodeStatusView; selfLoad: number; peers: PeerView[]; current: boolean }) {
   const W = 360;
   const c = W / 2;
   const R = 128;
   return (
     <figure className="m-0">
-      <svg viewBox={`0 0 ${W} ${W}`} className="w-full max-w-[420px]" role="img" aria-label={`Gateway and ${peers.length} peers`}>
+      <svg viewBox={`0 0 ${W} ${W}`} className="w-full max-w-[420px]" role="img" aria-label={`Gateway and ${peers.length} peers; ${current ? 'live' : 'connection status unknown'}`}>
         <circle cx={c} cy={c} r={R} fill="none" stroke="var(--color-rule)" strokeDasharray="1 5" />
         {peers.map((p, i) => {
           const a = (i / Math.max(1, peers.length)) * Math.PI * 2 - Math.PI / 2;
@@ -193,26 +211,30 @@ function PackRing({ self, selfLoad, peers }: { self: NodeStatusView; selfLoad: n
           const load = ((p.activeJobs ?? 0) + (p.queueLength ?? 0)) / 9;
           return (
             <g key={p.peerId}>
-              {p.connected && <line x1={c} y1={c} x2={x} y2={y} stroke="var(--color-slate)" strokeOpacity="0.5" strokeDasharray={p.relayed ? '4 4' : undefined} />}
+              {current && p.connected && <line x1={c} y1={c} x2={x} y2={y} stroke="var(--color-slate)" strokeOpacity="0.5" strokeDasharray={p.relayed ? '4 4' : undefined} />}
               <g transform={`translate(${x - 17} ${y - 17})`}>
-                <Moon load={load} available={p.available} size={34} title={`${p.label ?? p.peerId}: ${p.available ? 'can serve' : 'cannot serve'}`} />
+                <Moon load={load} available={p.available} size={34} title={`${p.label ?? p.peerId}: ${current ? (p.connected ? 'connected' : 'not connected') : 'status unknown'}; ${p.available ? 'can serve' : 'cannot serve'} at last update`} />
               </g>
               <text x={x} y={y + 32} textAnchor="middle" fontSize="12" fill="var(--color-ink)">
                 {p.label ?? p.peerId.slice(-6)}
               </text>
-              <circle cx={x + 13} cy={y - 13} r="3" fill={`oklch(0.65 0.12 ${hueFor(p.peerId)})`} />
+              <circle cx={x + 13} cy={y - 13} r="5" fill={current ? (p.connected ? 'var(--color-pine)' : 'var(--color-blood)') : 'var(--color-slate)'} stroke="var(--color-sheet)" strokeWidth="2" />
+              <text x={x} y={y + 46} textAnchor="middle" fontSize="10" fill={current ? (p.connected ? 'var(--color-pine)' : 'var(--color-blood)') : 'var(--color-slate)'}>
+                {current ? (p.connected ? 'connected' : 'not connected') : 'unknown'}
+              </text>
             </g>
           );
         })}
         <g transform={`translate(${c - 28} ${c - 28})`}>
-          <Moon load={selfLoad} available={self.runtime.ready} size={56} title="this gateway" />
+          <Moon load={selfLoad} available={self.runtime.ready} size={56} title={`this gateway: ${current ? 'connected' : 'status unknown'}`} />
         </g>
+        <circle cx={c + 22} cy={c - 22} r="6" fill={current ? 'var(--color-pine)' : 'var(--color-slate)'} stroke="var(--color-sheet)" strokeWidth="2" />
         <text x={c} y={c + 46} textAnchor="middle" fontSize="12" fill="var(--color-slate)">
           this gateway
         </text>
       </svg>
       <figcaption className="mt-2 text-xs text-slate">
-        Lit part of each moon: how busy the node is. Solid line: direct connection. Dashed: through a relay. Dotted outline: cannot serve right now.
+        Green dot: connected. Red dot: not connected. Gray dot: status unknown. Solid line: direct connection. Dashed line: via relay. Lit moon: workload; dotted moon: cannot serve at last update. A missing link does not prove a device is powered off.
       </figcaption>
     </figure>
   );

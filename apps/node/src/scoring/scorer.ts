@@ -72,6 +72,10 @@ export class Scorer {
     },
   ) {}
 
+  pid(): number | undefined {
+    return this.child?.pid;
+  }
+
   status(): { state: string; detail: string } {
     return { state: this.state, detail: this.detail };
   }
@@ -79,6 +83,8 @@ export class Scorer {
   private manifest: ScorerManifest | undefined;
 
   async start(): Promise<void> {
+    // The node may have begun shutting down while models were still loading.
+    if (this.stopped) return;
     if (!this.opts.enabled) {
       this.state = 'disabled';
       this.detail = 'scorer.enabled is false';
@@ -116,8 +122,9 @@ export class Scorer {
         '--api-key-file', keyFile, '--no-webui', '--offline', '--no-slots',
       ];
       const usePdeath = process.platform === 'linux' && existsSync('/usr/bin/setpriv');
-      const [cmd, cmdArgs] = usePdeath ? ['/usr/bin/setpriv', ['--pdeathsig', 'TERM', '--', this.opts.binary, ...args]] : [this.opts.binary, args];
+      const [cmd, cmdArgs] = usePdeath ? ['/usr/bin/setpriv', ['--pdeathsig', 'KILL', '--', this.opts.binary, ...args]] : [this.opts.binary, args];
       this.baseUrl = `http://127.0.0.1:${port}`;
+      if (this.stopped) return;
       const child = spawn(cmd, cmdArgs, { stdio: ['ignore', 'ignore', 'ignore'], env: { PATH: process.env.PATH ?? '/usr/bin:/bin' } });
       this.child = child;
       child.on('exit', (code) => {
@@ -148,11 +155,18 @@ export class Scorer {
     }
   }
 
+  private stopped = false;
+
   async stop(): Promise<void> {
+    this.stopped = true;
     const c = this.child;
     this.state = 'disabled';
     this.child = undefined;
-    c?.kill('SIGTERM');
+    if (!c) return;
+    c.kill('SIGTERM');
+    // A llama-server that ignores SIGTERM (seen when hung) must not outlive the node.
+    await Promise.race([new Promise((r) => c.once('exit', r)), new Promise((r) => setTimeout(r, 3000))]);
+    if (c.exitCode === null && c.signalCode === null) c.kill('SIGKILL');
   }
 
   get ready(): boolean {

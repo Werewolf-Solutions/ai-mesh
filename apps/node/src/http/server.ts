@@ -23,6 +23,7 @@ import {
   type MetricsView,
   type NodeStatusView,
   type ReadyBody,
+  type SystemView,
 } from '@werewolf-mesh/protocol';
 import Fastify, { type FastifyInstance, type FastifyReply, type FastifyRequest } from 'fastify';
 import { existsSync } from 'node:fs';
@@ -35,6 +36,9 @@ import type { ScoreResult } from '../scoring/scorer.js';
 import type { PackMemory } from '../pack/memory.js';
 import type { ModelManager } from '../models/manager.js';
 import { planGeneration } from '../models/effort.js';
+import type { SplitLender, SplitTunnels } from '../split/split.js';
+import type { RewardsLedger, SignedSettlement } from '../rewards/ledger.js';
+import { research, wantsWeb, type AgentStep, type Source } from '../agent/research.js';
 import { NoteKind, PACK_LIMITS, scrub } from '@werewolf-mesh/protocol';
 import { z } from 'zod';
 
@@ -72,6 +76,15 @@ export interface HttpDeps {
   score: (reference: string, candidates: string[]) => Promise<ScoreResult>;
   scorerStatus: () => { state: string; detail: string };
   pack: PackMemory | null;
+  /** This computer's resources (local to the operator; never sent to peers). */
+  system: () => Promise<SystemView>;
+  rewards?: () => RewardsLedger;
+  /** Splitting models across machines (docs/split.md). */
+  split?: {
+    lender: () => SplitLender;
+    tunnels: () => SplitTunnels;
+    candidates: () => Promise<Array<{ peerId: string; label: string | null; connected: boolean; lends: boolean; reason: string | null }>>;
+  };
   uiDir?: string;
 }
 
@@ -262,7 +275,9 @@ export async function buildHttpServer(deps: HttpDeps): Promise<FastifyInstance> 
     if (totalChars > LIMITS.maxTotalChars) {
       return sendError(reply, new MeshError('payload_too_large', `messages total ${totalChars} chars; limit ${LIMITS.maxTotalChars}`));
     }
-    const deadlineMs = Math.min(r.mesh?.timeout_ms ?? cfg.timeouts.defaultDeadlineMs, cfg.timeouts.maxDeadlineMs);
+    // Web answers carry a long prompt (page text); unless the caller set a budget they get the longest allowed.
+    const wantsLong = r.mesh?.web === 'on' || (r.mesh?.web === 'auto' && wantsWeb([...r.messages].reverse().find((m) => m.role === 'user')?.content ?? ''));
+    const deadlineMs = Math.min(r.mesh?.timeout_ms ?? (wantsLong ? cfg.timeouts.maxDeadlineMs : cfg.timeouts.defaultDeadlineMs), cfg.timeouts.maxDeadlineMs);
     const target = r.mesh?.target ?? 'auto';
     const prefer = (req.headers['x-mesh-prefer'] as string | undefined)?.slice(0, 128);
     const settings = {
@@ -285,11 +300,26 @@ export async function buildHttpServer(deps: HttpDeps): Promise<FastifyInstance> 
     const id = `chatcmpl-${Math.random().toString(36).slice(2, 14)}`;
     const created = Math.floor(Date.now() / 1000);
 
+    // Web research (docs/agents.md): runs here, on the node the person asked, before the answer.
+    const lastUser = [...r.messages].reverse().find((m) => m.role === 'user')?.content ?? '';
+    const webMode = r.mesh?.web ?? 'off';
+    const webCfg = cfg.agent.web;
+    let useWeb = webMode === 'on' || (webMode === 'auto' && wantsWeb(lastUser));
+    if (useWeb && !webCfg.enabled) {
+      if (webMode === 'on') return sendError(reply, new MeshError('bad_request', 'web research is turned off on this node (agent.web.enabled)'));
+      useWeb = false;
+    }
+    if (useWeb && roleOf(req) !== 'admin' && !webCfg.allowClients) {
+      if (webMode === 'on') return sendError(reply, new MeshError('forbidden', "web research on this node is only for its operator: searches leave from the operator's own connection"));
+      useWeb = false;
+    }
+
     // Pack memory: give the model the most relevant anonymous notes as quoted context.
     let messages = r.messages;
     let packNotes: Array<{ id: string; title: string; solution: string; similarity: number }> = [];
+    let web: { query: string | null; sources: Source[]; steps: AgentStep[] } | null = null;
     // Skipped for very long prompts: notes must not push a request over the 2,048-token budget.
-    if (deps.pack && r.mesh?.pack !== false && totalChars < 3000) {
+    if (!useWeb && deps.pack && r.mesh?.pack !== false && totalChars < 3000) {
       const question = [...r.messages].reverse().find((m) => m.role === 'user')?.content ?? '';
       const found = await deps.pack.relevant(question).catch(() => []);
       if (found.length) {
@@ -301,16 +331,122 @@ export async function buildHttpServer(deps: HttpDeps): Promise<FastifyInstance> 
         messages = [{ role: 'system' as const, content: system }, ...r.messages.filter((m) => m.role !== 'system')];
       }
     }
+    // ---- streaming (SSE) helpers. Headers are sent at the first token, or at the
+    // first research step, so every failure before that is a normal HTTP error.
+    let headersSent = false;
+    const openStream = (extra: Record<string, string> = {}) => {
+      if (headersSent) return;
+      reply.hijack();
+      reply.raw.writeHead(200, {
+        'content-type': 'text/event-stream; charset=utf-8',
+        'cache-control': 'no-cache, no-transform',
+        connection: 'keep-alive',
+        'x-accel-buffering': 'no',
+        'x-mesh-gateway': deps.selfPeerId,
+        'x-mesh-runtime': deps.runtimeKind,
+        ...extra,
+        ...corsHeaders(req, allowedOrigins),
+      });
+      headersSent = true;
+      // SSE comment every 15 s while nothing else is sent (a slow node may read a long prompt for minutes).
+      const ka = setInterval(() => {
+        if (reply.raw.destroyed || reply.raw.writableEnded) clearInterval(ka);
+        else reply.raw.write(': keep-alive\n\n');
+      }, 15_000);
+      reply.raw.on('close', () => clearInterval(ka));
+      reply.raw.on('finish', () => clearInterval(ka));
+    };
+    const write = async (obj: unknown) => {
+      if (reply.raw.destroyed) return;
+      const ok = reply.raw.write(`data: ${typeof obj === 'string' ? obj : JSON.stringify(obj)}\n\n`);
+      if (!ok && !reply.raw.destroyed) {
+        await new Promise<void>((resolve) => {
+          const done = () => {
+            reply.raw.off('drain', done);
+            reply.raw.off('close', done);
+            resolve();
+          };
+          reply.raw.on('drain', done);
+          reply.raw.on('close', done);
+        });
+      }
+    };
+    const chunk = (delta: ChatCompletionChunk['choices'][0]['delta'], finish: 'stop' | 'length' | null, extra: Partial<ChatCompletionChunk> = {}): ChatCompletionChunk => ({
+      id,
+      object: 'chat.completion.chunk',
+      created,
+      model: entry.id,
+      choices: [{ index: 0, delta, finish_reason: finish }],
+      ...extra,
+    });
+    const agentChunk = (agent: NonNullable<ChatCompletionChunk['mesh']>['agent']) => {
+      if (!r.stream) return;
+      openStream();
+      void write(chunk({}, null, { mesh: { gatewayPeerId: deps.selfPeerId, workerPeerId: null, route: null, agent } }));
+    };
+
+    if (useWeb) {
+      const steps: AgentStep[] = [];
+      const quick = planGeneration(entry, 'none', 40);
+      const history = r.messages.filter((m) => m.role !== 'system');
+      // Page text that still leaves room for the conversation, the thinking budget and the answer.
+      const ctxTokens = entry.serving.contextTokens;
+      const reserved = plan.maxTokens + (plan.thinking?.mode === 'on' ? (plan.thinking.budget ?? 0) : 0) + 400 + Math.ceil(totalChars / 3);
+      // Capped at ~8,000 characters (~2,300 tokens): on a CPU, reading more takes minutes.
+      const budgetChars = Math.max(800, Math.min(8_000, (ctxTokens - reserved) * 3));
+      try {
+        const found = await research(
+          history,
+          {
+            searxUrl: webCfg.searxUrl,
+            maxPages: webCfg.maxPages,
+            budgetChars,
+            fetch: { maxBytes: webCfg.maxPageBytes, timeoutMs: webCfg.fetchTimeoutMs, allowLoopback: webCfg.unsafeAllowLoopback },
+            onStep: (st) => {
+              steps.push(st);
+              agentChunk({ step: st });
+            },
+            generate: async (msgs, maxTokens, signal) => {
+              let text = '';
+              const g = deps.gateway.execute(
+                { model: fp, messages: msgs, settings: { maxTokens, ...(quick.thinking ? { thinking: quick.thinking } : {}), temperature: 0.2 }, deadlineMs: Math.min(deadlineMs, 120_000), target },
+                signal,
+              );
+              for await (const ev of g) if ((ev.type === 'first_token' || ev.type === 'token') && ev.channel !== 'reasoning') text += ev.text;
+              return text;
+            },
+          },
+          ctl.signal,
+        );
+        web = { query: found.query, sources: found.sources, steps };
+        agentChunk({ sources: found.sources, query: found.query });
+        const own = r.messages.filter((m) => m.role === 'system').map((m) => m.content);
+        messages = [{ role: 'system' as const, content: [found.context, ...own].join('\n\n') }, ...history];
+        const answerStep: AgentStep = { kind: 'answer', status: 'running', text: `Writing the answer with ${entry.displayName}` };
+        steps.push(answerStep);
+        agentChunk({ step: answerStep });
+      } catch (err) {
+        if (ctl.signal.aborted) return reply;
+        const e = err instanceof MeshError ? err : new MeshError('tool_failed', `web research failed: ${(err as Error).message}`.slice(0, 300));
+        reply.raw.off('close', onClose);
+        if (!headersSent) return sendError(reply, e);
+        await write(errorBody(e, {}));
+        reply.raw.end();
+        return reply;
+      }
+    }
+
     const gen = deps.gateway.execute({ model: fp, messages, settings, deadlineMs, target, ...(prefer ? { prefer } : {}) }, ctl.signal);
     const meshInfo = (worker: string | null, route: 'local' | 'remote' | null, attempts: AttemptRecord[]) => ({
       gatewayPeerId: deps.selfPeerId,
       workerPeerId: worker,
       route,
       attempts,
-      runtime: deps.runtimeKind,
+      runtime: entry.family === 'external' ? ('external' as const) : deps.runtimeKind,
       model: entry.id,
       effort: plan.effort,
       ...(packNotes.length ? { packNotes } : {}),
+      ...(web ? { web } : {}),
     });
 
     if (!r.stream) {
@@ -348,47 +484,10 @@ export async function buildHttpServer(deps: HttpDeps): Promise<FastifyInstance> 
       }
     }
 
-    // ---- streaming (SSE). Headers are sent only once the first token exists, so
-    // every pre-output failure is a normal HTTP error with a status code.
-    let headersSent = false;
-    const write = async (obj: unknown) => {
-      const ok = reply.raw.write(`data: ${typeof obj === 'string' ? obj : JSON.stringify(obj)}\n\n`);
-      if (!ok && !reply.raw.destroyed) {
-        await new Promise<void>((resolve) => {
-          const done = () => {
-            reply.raw.off('drain', done);
-            reply.raw.off('close', done);
-            resolve();
-          };
-          reply.raw.on('drain', done);
-          reply.raw.on('close', done);
-        });
-      }
-    };
-    const chunk = (delta: ChatCompletionChunk['choices'][0]['delta'], finish: 'stop' | 'length' | null, extra: Partial<ChatCompletionChunk> = {}): ChatCompletionChunk => ({
-      id,
-      object: 'chat.completion.chunk',
-      created,
-      model: entry.id,
-      choices: [{ index: 0, delta, finish_reason: finish }],
-      ...extra,
-    });
     try {
       for await (const ev of gen) {
         if (ev.type === 'first_token') {
-          reply.hijack();
-          reply.raw.writeHead(200, {
-            'content-type': 'text/event-stream; charset=utf-8',
-            'cache-control': 'no-cache, no-transform',
-            connection: 'keep-alive',
-            'x-accel-buffering': 'no',
-            'x-mesh-worker': ev.workerPeerId,
-            'x-mesh-gateway': deps.selfPeerId,
-            'x-mesh-route': ev.route,
-            'x-mesh-runtime': deps.runtimeKind,
-            ...corsHeaders(req, allowedOrigins),
-          });
-          headersSent = true;
+          openStream({ 'x-mesh-worker': ev.workerPeerId, 'x-mesh-route': ev.route });
           await write(chunk({ role: 'assistant', ...(ev.channel === 'reasoning' ? { reasoning_content: ev.text } : { content: ev.text }) }, null, { mesh: meshInfo(ev.workerPeerId, ev.route, ev.attempts) }));
         } else if (ev.type === 'token') {
           await write(chunk(ev.channel === 'reasoning' ? { reasoning_content: ev.text } : { content: ev.text }, null));
@@ -427,6 +526,87 @@ export async function buildHttpServer(deps: HttpDeps): Promise<FastifyInstance> 
   app.get('/admin/peers', { preHandler: requireRole('admin') }, async () => ({ observation: 'local-partial', peers: deps.peers() }));
   app.get('/admin/metrics', { preHandler: requireRole('admin') }, async () => deps.metrics());
   app.get('/admin/model', { preHandler: requireRole('admin') }, async () => deps.modelInfo());
+  app.get('/admin/system', { preHandler: requireRole('admin') }, async () => deps.system());
+
+  // ---- WLF rewards (operator only; docs/rewards.md)
+  app.get('/admin/rewards', { preHandler: requireRole('admin') }, async (_req, reply) => {
+    if (!deps.rewards) return sendError(reply, new MeshError('bad_request', 'rewards are not available'));
+    const l = deps.rewards();
+    return { ...(await l.status()), settler: cfg.rewards.settler ?? null, balance: await l.settlements.balance() };
+  });
+  app.get('/admin/rewards/bundle', { preHandler: requireRole('admin') }, async (_req, reply) => {
+    if (!deps.rewards) return sendError(reply, new MeshError('bad_request', 'rewards are not available'));
+    return deps.rewards().bundle();
+  });
+  app.post('/admin/rewards/settlement', { preHandler: requireRole('admin'), bodyLimit: 16 * 2 ** 20 }, async (req, reply) => {
+    if (!deps.rewards) return sendError(reply, new MeshError('bad_request', 'rewards are not available'));
+    try {
+      return await deps.rewards().settlements.import(req.body as SignedSettlement);
+    } catch (err) {
+      return sendError(reply, new MeshError('bad_request', (err as Error).message.slice(0, 300)));
+    }
+  });
+
+  // ---- external engines (operator only): ds4-server, LM Studio, Ollama, vLLM …
+  app.get('/admin/engines', { preHandler: requireRole('admin') }, async () => ({
+    engines: deps.models.engineList().map((c) => ({ ...c, status: deps.models.hosts.get(c.id)?.adapter.status() ?? null, fingerprint: deps.models.fingerprintOf(deps.models.catalog.get(c.id)!) })),
+  }));
+  app.post('/admin/engines', { preHandler: requireRole('admin') }, async (req, reply) => {
+    try {
+      await deps.models.addEngine(req.body as never);
+      const c = deps.models.engineList().find((x) => x.id === (req.body as { id?: string }).id);
+      return { added: c?.id, status: deps.models.hosts.get(c!.id)?.adapter.status() ?? null };
+    } catch (err) {
+      const e = err as Error & { issues?: Array<{ path: unknown[]; message: string }> };
+      const msg = e.issues?.[0] ? `${e.issues[0].path.join('.')}: ${e.issues[0].message}` : e.message;
+      return sendError(reply, err instanceof MeshError ? err : new MeshError('bad_request', `invalid engine: ${msg}`.slice(0, 300)));
+    }
+  });
+  app.delete('/admin/engines/:id', { preHandler: requireRole('admin') }, async (req, reply) => {
+    try {
+      await deps.models.removeEngine((req.params as { id: string }).id);
+      return { removed: true };
+    } catch (err) {
+      return sendError(reply, err instanceof MeshError ? err : new MeshError('bad_request', (err as Error).message));
+    }
+  });
+
+  // ---- splitting a model across machines (operator only)
+  const PeerList = z.array(z.string().min(10).max(128)).max(64);
+  app.get('/admin/split', { preHandler: requireRole('admin') }, async (_req, reply) => {
+    if (!deps.split) return sendError(reply, new MeshError('bad_request', 'splitting is not available on this node'));
+    return {
+      accel: deps.models.accel,
+      lend: deps.split.lender().view(),
+      borrow: { tunnels: { ...deps.split.tunnels().stats }, peers: await deps.split.candidates() },
+      models: [...deps.models.catalog.keys()].map((id) => ({ id, split: deps.models.splitOf(id) })).filter((m) => m.split.length),
+    };
+  });
+  app.post('/admin/split/lend', { preHandler: requireRole('admin') }, async (req, reply) => {
+    if (!deps.split) return sendError(reply, new MeshError('bad_request', 'splitting is not available on this node'));
+    const p = z.strictObject({ enabled: z.boolean().optional(), peers: PeerList.optional(), device: z.enum(['cpu', 'gpu']).optional() }).safeParse(req.body ?? {});
+    if (!p.success) return sendError(reply, new MeshError('bad_request', `invalid body: ${p.error.issues[0]?.message}`));
+    try {
+      return await deps.split.lender().configure(p.data);
+    } catch (err) {
+      return sendError(reply, new MeshError('bad_request', (err as Error).message.slice(0, 300)));
+    }
+  });
+  app.post('/admin/models/:id/split', { preHandler: requireRole('admin') }, async (req, reply) => {
+    const p = z.strictObject({ peers: PeerList.max(8), localShare: z.number().min(0).max(1).optional() }).safeParse(req.body ?? {});
+    if (!p.success) return sendError(reply, new MeshError('bad_request', `invalid body: ${p.error.issues[0]?.message}`));
+    try {
+      // Restarting takes a while; answer at once and let the caller poll /admin/models.
+      const id = (req.params as { id: string }).id;
+      if (!deps.models.catalog.has(id)) throw new MeshError('bad_request', `unknown model ${id}`);
+      if (deps.runtimeKind === 'fake') throw new MeshError('bad_request', 'the fake runtime cannot be split');
+      if (cfg.runtime.mode === 'external') throw new MeshError('bad_request', 'this node uses an external runtime');
+      void deps.models.setSplit(id, p.data.peers, p.data.localShare).catch((err) => deps.log.error({ model: id, err: (err as Error).message }, 'split change failed'));
+      return { accepted: true, split: p.data.peers };
+    } catch (err) {
+      return sendError(reply, err instanceof MeshError ? err : new MeshError('bad_request', (err as Error).message));
+    }
+  });
   app.post('/admin/reload-admission', { preHandler: requireRole('admin') }, async () => {
     await deps.reloadAdmission();
     return { ok: true };

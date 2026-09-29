@@ -107,4 +107,15 @@ describe('multi-model mesh', () => {
     await (await fetch(`${n3.url}/admin/models/fake-c/unhost`, { method: 'POST', headers: { authorization: `Bearer ${n3.adminToken}` } })).json();
     expect((await admin(n3, '/admin/status')).models.map((m: any) => m.id)).toEqual(['fake-a']);
   });
+
+  it("reports this computer's resources to the operator only", async () => {
+    const r = await fetch(`${n1.url}/admin/system`, { headers: { authorization: `Bearer ${n1.clientToken}` } });
+    expect(r.status).toBe(403);
+    const v = await admin(n1, '/admin/system');
+    expect(v.cpu.threads).toBeGreaterThan(0);
+    expect(v.memory.totalMB).toBeGreaterThan(0);
+    expect(v.mesh.node.rssMB).toBeGreaterThan(10);
+    // Fake runtimes are not OS processes: listed, but with no pid or usage.
+    expect(v.mesh.runtimes.map((x: any) => [x.name, x.pid])).toEqual([['FAKE fake-a', null]]);
+  });
 });

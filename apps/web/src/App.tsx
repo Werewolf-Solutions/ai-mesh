@@ -5,10 +5,11 @@ import { NetworkView, useSnapshot } from './components/NetworkView';
 import { TestsView } from './components/TestsView';
 import { PackView } from './components/PackView';
 import { ModelsView } from './components/ModelsView';
+import { ComputerView } from './components/ComputerView';
 import { Moon } from './components/Moon';
 import { uid, useChats, useGateways, usePersistent, type Message } from './store';
 
-type Tab = 'chat' | 'pack' | 'models' | 'network' | 'tests' | 'gateways';
+type Tab = 'chat' | 'pack' | 'models' | 'computer' | 'network' | 'tests' | 'gateways';
 
 export function App() {
   const [gateways, setGateways] = useGateways();
@@ -59,6 +60,7 @@ export function App() {
               ['chat', 'Chat'],
               ['pack', 'Pack'],
               ['models', 'Models'],
+              ['computer', 'Computer'],
               ['network', 'Network'],
               ['tests', 'Tests'],
               ['gateways', 'Gateways'],
@@ -151,6 +153,7 @@ export function App() {
           {tab === 'network' && <NetworkView snap={snap} error={error} gateway={primary} />}
           {tab === 'pack' && <PackView gateways={gateways} />}
           {tab === 'models' && <ModelsView gateways={gateways} />}
+          {tab === 'computer' && <ComputerView gateways={gateways} />}
           {tab === 'tests' && <TestsView gateways={gateways} peers={snap?.peers ?? []} selfPeerId={snap?.status.peerId ?? null} labels={labels} />}
           {tab === 'gateways' && <GatewaysView gateways={gateways} setGateways={setGateways} />}
         </main>

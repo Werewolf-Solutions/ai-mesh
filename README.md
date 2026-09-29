@@ -1,8 +1,8 @@
 # Werewolf AI Mesh
 
-A self-hosted, peer-to-peer network for running an openly licensed language model on computers you and people you trust control. No commercial AI API, subscription, account, blockchain or token is needed to use it.
+A self-hosted, peer-to-peer network for running an openly licensed language model on computers you and people you trust control. No commercial AI API, subscription, account, blockchain or token is needed to use it. (Nodes can earn WLF reward points for serving others; they are points, not a token.)
 
-**Version 0.2 is replicated inference with a choice of models.** You pick a model from a vetted catalog (from SmolLM2 135M up to Qwen3 8B, all Apache-2.0) and an effort level, like in ChatGPT. Every node that serves a model holds a *complete* copy of it, and the mesh sends each request to a node serving the chosen model. Running a model on your computer shares it with the whole pack. More nodes give more capacity and survive more failures. They do **not** make a model smarter, pool memory, or split a model across machines; that is future work ([roadmap](docs/roadmap.md)).
+**Version 0.2 is replicated inference with a choice of models.** You pick a model from a vetted catalog (from SmolLM2 135M up to Qwen3 8B, all Apache-2.0) and an effort level, like in ChatGPT. Every node that serves a model holds a *complete* copy of it, and the mesh sends each request to a node serving the chosen model. Running a model on your computer shares it with the whole pack. More nodes give more capacity and survive more failures. They do not make a model smarter. Separately, a model too big for one computer can be **split** across several trusted machines ([docs/split.md](docs/split.md)); that runs slower than a model on one GPU.
 
 ## What works
 
@@ -19,6 +19,11 @@ Each full node:
 - retries on up to two other workers if a worker fails **before** any text was produced; if one fails **after** text started, the answer is marked *interrupted* and never silently continued elsewhere
 - reaches peers behind NAT through circuit relays run by public nodes, and keeps working if either of two relays is lost
 - keeps an anonymous **pack memory**: people share how they solved a problem, every node keeps a copy, similar ideas merge, and relevant notes are shown and given to the model when a similar question comes up ([docs/pack-memory.md](docs/pack-memory.md))
+- earns **WLF reward points** for answering other people's requests (never for its own use or its own network), with signed receipts, trust-weighted and settled daily ([docs/rewards.md](docs/rewards.md)). WLF are points, not a token
+- can **split one model across machines**: layers run partly on this node and partly in memory lent by trusted peers, through the mesh's encrypted connections, for models too big for any one computer ([docs/split.md](docs/split.md))
+- can **serve models from external engines** such as ds4-server, LM Studio or Ollama to the whole pack ([docs/engines.md](docs/engines.md))
+- can **search the web** before answering (*Web* button in the chat): a local SearXNG searches, the node reads up to two pages safely, and the model answers citing them ([docs/agents.md](docs/agents.md))
+- shows its operator how hard the computer is working (*Computer* page, `./mesh resources`): CPU, RAM and GPU use, temperatures, fans, and how much of it Werewolf's own processes take. These readings stay on the node.
 - serves an OpenAI-compatible subset of the HTTP API and a UI with chat, a network dashboard, and a Tests page: a reading-speed test you can run against any node, with each summary scored against an ideal summary (optional `./mesh model download --scorer`), plus the published benchmarks
 
 What each failure does, and what it does not survive, is listed in [docs/architecture.md](docs/architecture.md#failures-tolerated). The security assumptions are in [docs/security.md](docs/security.md).
@@ -113,6 +118,11 @@ Full steps, including a second relay, are in [docs/operations.md](docs/operation
 | `./mesh doctor` | Prerequisite checks (Node, CPU/RAM/disk, Docker, model hash, runtime build, permissions, ports) |
 | `./mesh runtime install` | Download the pinned llama.cpp build (SHA-256 checked) |
 | `./mesh gpu [status\|on [cuda\|vulkan]\|off]` | Run this node's models on its GPU (downloads the pinned GPU build first) or the CPU |
+| `./mesh rewards [status\|export\|settle\|import\|verify]` | WLF points: receipts, settlement by the network's settler, and verification |
+| `./mesh split [status\|lend on PEER…\|lend off\|model ID PEER…]` | Lend memory to trusted peers, or split a model across lenders |
+| `./mesh engine [list\|add ID --url URL …\|remove ID]` | Serve a model from an OpenAI-compatible engine (ds4-server, LM Studio …) |
+| `./mesh search start\|stop\|status\|test "…"` | Run the local SearXNG search engine used for web research (Docker, 127.0.0.1 only) |
+| `./mesh resources [--watch]` | This computer's CPU, RAM, GPU, temperatures and fans, and what Werewolf uses |
 | `./mesh models [install\|unhost\|remove] ID` | List the model catalog; download and serve, stop, or delete a model |
 | `./mesh model download` / `import <file>` / `verify` `[--model ID]` | Get, import or re-verify a catalog model's GGUF |
 | `./mesh init` | Create config, identity and HTTP tokens (never overwrites) |
@@ -143,7 +153,9 @@ What was run, and what could not be, is recorded in [docs/testing.md](docs/testi
 - [Security assumptions](docs/security.md)
 - [Models, effort and sharing compute](docs/models.md)
 - [Sharing a GPU](docs/gpu.md)
-- [Tools and agents: design (not built yet)](docs/agents-design.md)
+- [WLF rewards and their threat model](docs/rewards.md)
+- [Splitting a model across machines](docs/split.md) · [External engines](docs/engines.md)
+- [Web research](docs/agents.md) · [Tools and agents: design](docs/agents-design.md)
 - [Pack memory](docs/pack-memory.md)
 - [Model provenance](docs/model.md)
 - [Benchmarks](docs/benchmarks.md) · [Testing](docs/testing.md) · [Roadmap](docs/roadmap.md) · [Progress checklist](PROGRESS.md)

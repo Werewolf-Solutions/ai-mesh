@@ -241,6 +241,13 @@ export class PeerManager {
     return !!e?.status && this.isAvailable(peerId) && e.status.modelLoad.some((m) => m.model === fingerprint && m.ready);
   }
 
+  /** Every model fingerprint some available peer serves now. */
+  servedFingerprints(): string[] {
+    const out = new Set<string>();
+    for (const e of this.peers.values()) if (this.isAvailable(e.peerId)) for (const m of e.status!.modelLoad) if (m.ready) out.add(m.model);
+    return [...out];
+  }
+
   /** How many available peers serve `fingerprint` (this node's local, partial view). */
   countServing(fingerprint: string): number {
     return this.candidatesFor(fingerprint).length;

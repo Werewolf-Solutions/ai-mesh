@@ -17,6 +17,7 @@
     "@libp2p/peer-id": "6.0.15",
     "@libp2p/tcp": "11.0.28",
     "@libp2p/utils": "7.4.1",
+    "@libp2p/websockets": "10.1.21",
     "@multiformats/multiaddr": "13.0.3",
     "@types/node": "^22.20.4",
     "@werewolf-mesh/client": "workspace:*",

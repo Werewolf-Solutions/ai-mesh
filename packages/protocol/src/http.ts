@@ -60,6 +60,11 @@ export const ChatCompletionRequest = z.strictObject({
       timeout_ms: z.number().int().min(1000).max(15 * 60_000).optional(),
       /** Use pack-memory notes as context (default true when the gateway has pack memory). */
       pack: z.boolean().optional(),
+      /**
+       * Web research on the gateway (docs/agents.md): "on" = search the web before answering,
+       * "auto" = only when the message asks for it (a link, "search the web…", news), "off" (default).
+       */
+      web: z.enum(['auto', 'on', 'off']).optional(),
     })
     .optional(),
 });
@@ -72,7 +77,7 @@ export interface MeshAttribution {
   /** 'local' when the gateway executed the request itself. */
   route: 'local' | 'remote' | null;
   attempts: Array<{ workerPeerId: string; route: 'local' | 'remote'; outcome: string }>;
-  runtime: 'llama.cpp' | 'fake';
+  runtime: 'llama.cpp' | 'fake' | 'external';
   timings?: { queueMs: number; firstTokenMs: number; totalMs: number };
 }
 
@@ -180,5 +185,53 @@ export interface CatalogModelView {
     progress?: { done: number; total: number };
     error?: string;
     fit: { ok: boolean; reasons: string[] };
+    /** Other machines this model is split across (their peer IDs), when set. */
+    split?: string[];
+    /** The runtime's own status line (e.g. how a split model is spread). */
+    detail?: string;
+  };
+}
+
+/**
+ * This computer's resources (GET /admin/system). Local to the node's operator:
+ * never sent to peers. Any reading the machine cannot provide is null.
+ */
+export interface SystemView {
+  at: number;
+  platform: string;
+  uptimeS: number;
+  cpu: {
+    model: string;
+    threads: number;
+    /** Busy share of all threads since the previous reading, 0–100. */
+    usagePct: number | null;
+    perThreadPct: number[];
+    load: [number, number, number];
+    freqMHz: number | null;
+    tempC: number | null;
+    tempSource: string | null;
+  };
+  memory: { totalMB: number; usedMB: number; availableMB: number; swapTotalMB: number; swapUsedMB: number };
+  gpus: Array<{
+    name: string;
+    vendor: 'nvidia' | 'amd' | 'intel' | 'other';
+    utilPct: number | null;
+    memUsedMB: number | null;
+    memTotalMB: number | null;
+    tempC: number | null;
+    powerW: number | null;
+    powerLimitW: number | null;
+    fanPct: number | null;
+    clockMHz: number | null;
+  }>;
+  disk: { path: string; totalMB: number; freeMB: number } | null;
+  sensors: {
+    temps: Array<{ source: string; label: string; c: number }>;
+    fans: Array<{ label: string; rpm: number }>;
+  };
+  /** What Werewolf itself uses: the node process and one runtime per hosted model (plus the scorer). */
+  mesh: {
+    node: { pid: number; rssMB: number; cpuPct: number | null };
+    runtimes: Array<{ name: string; pid: number | null; rssMB: number | null; cpuPct: number | null; gpuMemMB: number | null; accel: string }>;
   };
 }

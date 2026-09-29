@@ -39,6 +39,12 @@ export interface LlamaCppOptions {
   maxOutputTokens: number;
   /** Layers to offload to the GPU (0 = CPU only). */
   gpuLayers: number;
+  /**
+   * Split across other machines: called before every (re)start, returns the
+   * loopback tunnel endpoints of the lenders usable now (see split/split.ts).
+   * Throws when the model cannot start without them.
+   */
+  rpcServers?: () => Promise<{ endpoints: string[]; detail: string; gpuLayers?: number; tensorSplit?: number[] }>;
   mlock: boolean;
   mmap: boolean;
   startupTimeoutMs: number;
@@ -63,10 +69,15 @@ const sleep = (ms: number) => new Promise((r) => setTimeout(r, ms));
 export class LlamaCppAdapter implements InferenceAdapter {
   readonly kind = 'llama.cpp' as const;
   private child: ChildProcess | undefined;
+
+  pid(): number | undefined {
+    return this.child?.pid;
+  }
   private baseUrl = '';
   private apiKey = '';
   private state: RuntimeStatus = { ready: false, state: 'stopped', detail: 'not started' };
   private stopping = false;
+  private splitDetail = '';
   private restarts: number[] = [];
   /** Last lines of runtime stderr, for diagnostics only (llama-server does not log prompt text at default verbosity). */
   private stderrTail: string[] = [];
@@ -89,12 +100,17 @@ export class LlamaCppAdapter implements InferenceAdapter {
       this.baseUrl = this.opts.url.replace(/\/$/, '');
       this.apiKey = this.opts.apiKeyFile ? (await readFile(this.opts.apiKeyFile, 'utf8')).trim() : '';
     } else {
-      await this.spawnChild();
+      try {
+        await this.spawnChild();
+      } catch (err) {
+        this.state = { ready: false, state: 'failed', detail: (err as Error).message.slice(0, 300) };
+        throw err;
+      }
     }
     await this.waitHealthy();
     await this.checkIdentity();
     await this.warmup();
-    this.state = { ready: true, state: 'ready', detail: `llama.cpp ${this.opts.expectedBuildInfo} serving ${basename(this.opts.modelPath)}` };
+    this.state = { ready: true, state: 'ready', detail: `llama.cpp ${this.opts.expectedBuildInfo} serving ${basename(this.opts.modelPath)}${this.splitDetail ? `, ${this.splitDetail}` : ''}` };
   }
 
   private async spawnChild(): Promise<void> {
@@ -119,16 +135,27 @@ export class LlamaCppAdapter implements InferenceAdapter {
       '--offline',
       '--no-slots',
     ];
-    if (this.opts.gpuLayers > 0) args.push('-ngl', String(this.opts.gpuLayers));
+    let ngl = this.opts.gpuLayers;
+    this.splitDetail = '';
+    if (this.opts.rpcServers) {
+      const rpc = await this.opts.rpcServers();
+      if (rpc.endpoints.length) {
+        args.push('--rpc', rpc.endpoints.join(','));
+        if (rpc.gpuLayers !== undefined) ngl = rpc.gpuLayers;
+        if (rpc.tensorSplit) args.push('--tensor-split', rpc.tensorSplit.join(','));
+      }
+      this.splitDetail = rpc.detail;
+    }
+    if (ngl > 0) args.push('-ngl', String(ngl));
     if (this.opts.mlock) args.push('--mlock');
     if (!this.opts.mmap) args.push('--no-mmap');
     this.baseUrl = `http://127.0.0.1:${port}`;
     await this.killStaleRuntime();
-    // On Linux, ask the kernel to SIGTERM the runtime if this node process dies
+    // On Linux, ask the kernel to SIGKILL the runtime if this node process dies
     // (even by SIGKILL), so a crashed node never leaves an orphaned llama-server.
     const usePdeath = process.platform === 'linux' && existsSync('/usr/bin/setpriv');
     const [cmd, cmdArgs] = usePdeath
-      ? ['/usr/bin/setpriv', ['--pdeathsig', 'TERM', '--', this.opts.binary, ...args]]
+      ? ['/usr/bin/setpriv', ['--pdeathsig', 'KILL', '--', this.opts.binary, ...args]]
       : [this.opts.binary, args];
     const child = spawn(cmd, cmdArgs, {
       stdio: ['ignore', 'ignore', 'pipe'],

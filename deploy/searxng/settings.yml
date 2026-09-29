@@ -1,0 +1,27 @@
+# SearXNG for Werewolf AI Mesh web research (docs/agents.md).
+# Runs on this computer only (published on 127.0.0.1), used by this node only.
+use_default_settings: true
+
+general:
+  instance_name: "werewolf-search"
+
+server:
+  # Replaced at start by SEARXNG_SECRET (./mesh search start generates one).
+  secret_key: "replaced-by-SEARXNG_SECRET"
+  # Only this node talks to it, so the bot limiter (which needs Redis) is off.
+  limiter: false
+  public_instance: false
+  image_proxy: false
+  method: "GET"
+
+search:
+  safe_search: 1
+  autocomplete: ""
+  # The node reads JSON results.
+  formats:
+    - html
+    - json
+
+outgoing:
+  request_timeout: 5.0
+  max_request_timeout: 10.0

@@ -29,6 +29,8 @@ export const ERROR_CODES = {
   protocol_error: { http: 502, retryable: true },
   interrupted: { http: 502, retryable: false },
   cancelled: { http: 499, retryable: false },
+  /** A tool the gateway ran for the person failed (web search unavailable, …). Gateway-only; never on the peer wire. */
+  tool_failed: { http: 502, retryable: false },
   internal: { http: 500, retryable: false },
 } as const;
 

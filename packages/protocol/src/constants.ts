@@ -12,6 +12,16 @@ export const PROTOCOL_VERSION = 2 as const;
 export const STATUS_PROTOCOL = '/werewolf-mesh/status/2.0.0';
 export const INFER_PROTOCOL = '/werewolf-mesh/infer/2.0.0';
 
+/**
+ * Time allowed before the first token grows with the prompt: reading a long
+ * prompt is slow on a CPU (Qwen3 4B read 2,319 tokens in 104 s, ~22 tokens/s,
+ * on a busy 8-core desktop). The allowance assumes at least 12.5 tokens/s, so a
+ * hung runtime is still caught quickly on short prompts while long ones get
+ * the time they need.
+ */
+export const PREFILL_MS_PER_TOKEN = 80;
+export const firstTokenAllowanceMs = (baseMs: number, promptTokens: number) => baseMs + Math.max(0, promptTokens) * PREFILL_MS_PER_TOKEN;
+
 export const LIMITS = {
   /** Maximum size of one length-prefixed frame on any mesh protocol. */
   maxFrameBytes: 256 * 1024,

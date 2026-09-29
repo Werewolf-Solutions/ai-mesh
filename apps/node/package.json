@@ -24,6 +24,7 @@
     "@libp2p/ping": "3.1.13",
     "@libp2p/tcp": "11.0.28",
     "@libp2p/utils": "7.4.1",
+    "@libp2p/websockets": "10.1.21",
     "@multiformats/multiaddr": "13.0.3",
     "@werewolf-mesh/protocol": "workspace:*",
     "fastify": "5.12.5",

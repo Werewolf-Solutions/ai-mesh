@@ -12,7 +12,7 @@
  *
  * Works in browsers and Node >= 18 (global fetch + ReadableStream).
  */
-import { SseParser, type ChatCompletionChunk, type ChatMessage } from '@werewolf-mesh/protocol';
+import { SseParser, type AgentSourceView, type AgentStepView, type ChatCompletionChunk, type ChatMessage } from '@werewolf-mesh/protocol';
 
 export interface GatewayConfig {
   url: string;
@@ -35,6 +35,8 @@ export interface MeshMeta {
   effort?: string;
   /** Anonymous pack-memory notes the gateway gave the model as context. */
   packNotes?: Array<{ id: string; title: string; solution?: string; similarity: number }>;
+  /** Web research the gateway did before answering: the query, what it read, and each step. */
+  web?: { query: string | null; sources: AgentSourceView[]; steps: AgentStepView[] };
 }
 
 /** Response of POST /v1/mesh/score. */
@@ -70,6 +72,10 @@ export interface ChatOptions {
   onReasoning?: (text: string, full: string) => void;
   /** Set false to stop the gateway adding pack-memory notes as context. */
   pack?: boolean;
+  /** Web research on the gateway: "on" = always search first, "auto" = when the message asks for it. */
+  web?: 'auto' | 'on' | 'off';
+  /** Research progress (search, read, …) before the answer starts. */
+  onStep?: (step: AgentStepView, all: AgentStepView[]) => void;
   signal?: AbortSignal;
   onToken?: (text: string, full: string) => void;
   onMeta?: (meta: MeshMeta) => void;
@@ -88,6 +94,14 @@ export interface ClientOptions {
 
 /** HTTP statuses where another gateway may succeed (no output has been shown). */
 const FAILOVER_STATUS = new Set([401, 403, 404, 408, 429, 500, 502, 503, 504]);
+
+function meshField(o: ChatOptions): { mesh?: Record<string, unknown> } {
+  const m: Record<string, unknown> = {};
+  if (o.target && o.target !== 'auto') m.target = o.target;
+  if (o.pack === false) m.pack = false;
+  if (o.web && o.web !== 'off') m.web = o.web;
+  return Object.keys(m).length ? { mesh: m } : {};
+}
 
 export class MeshClient {
   private preferred: string | null = null;
@@ -187,7 +201,7 @@ export class MeshClient {
             ...(o.temperature !== undefined ? { temperature: o.temperature } : {}),
             ...(o.model ? { model: o.model } : {}),
             ...(o.effort ? { reasoning_effort: o.effort } : {}),
-            ...(o.target && o.target !== 'auto' ? { mesh: { target: o.target, ...(o.pack === false ? { pack: false } : {}) } } : o.pack === false ? { mesh: { pack: false } } : {}),
+            ...meshField(o),
           }),
           signal: ctl.signal,
         });
@@ -243,6 +257,25 @@ export class MeshClient {
         streamError = { code: j.error.code ?? 'error', message: j.error.message ?? 'stream error' };
         return;
       }
+      const ag = j.mesh?.agent;
+      if (ag) {
+        meta.web ??= { query: null, sources: [], steps: [] };
+        if (ag.step) {
+          // A step replaces the running step of the same kind.
+          const i = meta.web.steps.findIndex((x) => x.kind === ag.step!.kind && x.status === 'running');
+          if (i >= 0) meta.web.steps[i] = ag.step;
+          else meta.web.steps.push(ag.step);
+          o.onStep?.(ag.step, [...meta.web.steps]);
+        }
+        if (ag.sources) meta.web.sources = ag.sources;
+        if (ag.query !== undefined) meta.web.query = ag.query;
+      }
+      // The stream may open before a worker is chosen (web research); attribution then arrives with the first text.
+      if (j.mesh?.workerPeerId && j.mesh.workerPeerId !== meta.workerPeerId) {
+        meta.workerPeerId = j.mesh.workerPeerId;
+        meta.route = j.mesh.route;
+        o.onMeta?.(meta);
+      }
       if (j.mesh?.attempts) meta.attempts = j.mesh.attempts;
       if (j.mesh?.timings) meta.timings = j.mesh.timings;
       const mm = j.mesh as { model?: string; effort?: string } | undefined;
@@ -291,6 +324,8 @@ export class MeshClient {
     }
     if (o.signal?.aborted) return { status: 'cancelled', text, meta, gatewayAttempts: [] };
     if (done && finishReason && !streamError) return { status: 'completed', text, reasoning, finishReason, usage, meta, gatewayAttempts: [] };
+    // Failed before any text (e.g. web search unavailable): not an interrupted answer, just no answer.
+    if (streamError && !text && !reasoning) return { status: 'failed', text: '', error: streamError, gatewayAttempts: [] };
     const err: { code: string; message: string } = streamError ?? (idleFired
       ? { code: 'stream_idle_timeout', message: `no data for ${this.idleTimeoutMs} ms` }
       : { code: 'interrupted', message: 'stream ended without a completion marker' });

@@ -84,8 +84,23 @@ export interface ChatCompletionChunk {
     workerPeerId: string | null;
     route: 'local' | 'remote' | null;
     attempts?: Array<{ workerPeerId: string; route: 'local' | 'remote'; outcome: string }>;
-    runtime?: 'llama.cpp' | 'fake';
+    runtime?: 'llama.cpp' | 'fake' | 'external';
     /** Worker-measured; present on the final chunk. firstTokenMs ≈ time spent reading the prompt. */
     timings?: { queueMs: number; firstTokenMs: number; totalMs: number };
+    /** Web research progress (step chunks carry no text) and, once found, the sources. */
+    agent?: { step?: AgentStepView; sources?: AgentSourceView[]; query?: string | null };
   };
+}
+
+export interface AgentStepView {
+  kind: 'query' | 'search' | 'read' | 'answer';
+  status: 'running' | 'done' | 'failed';
+  text: string;
+}
+
+export interface AgentSourceView {
+  n: number;
+  title: string;
+  url: string;
+  kind: 'page' | 'snippet';
 }

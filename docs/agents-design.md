@@ -1,6 +1,11 @@
-# Tools and agents: design (not built yet)
+# Tools and agents: design
 
-Status: design agreed, not implemented. It incorporates an external review of the first proposal; the changes are marked **(review)**.
+Status (2026-09-29):
+
+- **Web research is built** as a fixed pipeline: search → read → answer with sources. See [agents.md](agents.md). It runs on the asker's node, the model never chooses a URL, and fetch_url has the SSRF rules below.
+- Not built yet: free tool choice by the model, the code tool, session affinity, and per-domain approvals.
+
+This design incorporates an external review of the first proposal; the changes are marked **(review)**.
 
 ## The loop
 

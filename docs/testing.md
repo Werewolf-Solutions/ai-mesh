@@ -6,9 +6,9 @@ Environment: Ubuntu 24.04 x86-64, Ryzen 7 3700X, 16 GB RAM, Docker 29.8.1 / Comp
 
 | Command | Runtime | Result |
 |---|---|---|
-| `pnpm test:unit` | none | **25/25 passed** |
-| `pnpm test:integration` | **FAKE deterministic adapter**, real separate OS processes, real libp2p | **57/57 passed** |
-| `pnpm test:real` | **real llama.cpp b11223 + verified model** | **15/15 passed** (plus a GPU test when an NVIDIA GPU is present, which passed on an RTX 3060), including meaning-match scoring, pack-memory retrieval, installing a catalog model through the admin API, effort on/off, routing by model across nodes, and the thinking budget stopping Qwen3 4B (the one "skipped" entry is the placeholder that only runs when the model is missing) |
+| `pnpm test:unit` | none | **112/112 passed** |
+| `pnpm test:integration` | **FAKE deterministic adapter**, real separate OS processes, real libp2p | **72/72 passed** |
+| `pnpm test:real` | **real llama.cpp b11223 + verified model** | **18 passed** (plus a GPU test when an NVIDIA GPU is present, which passed on an RTX 3060), including meaning-match scoring, pack-memory retrieval, installing a catalog model through the admin API, effort on/off, routing by model across nodes, and the thinking budget stopping Qwen3 4B (the one "skipped" entry is the placeholder that only runs when the model is missing) |
 
 The fake adapter emits placeholder tokens (`t0 t1 …`) and supports fault directives such as `[[fake:crash_after=3]]`. Its guard rails:
 
@@ -76,6 +76,76 @@ It is never used by real deployments.
 - In a real CPU + GPU pair, the CPU node sent all its requests to the GPU node.
 - UI: the Models page GPU card switched GPU → CPU → GPU.
 - `tests/integration/speed.test.ts`: the gateway learns the faster node from measured answers.
+
+## Computer page and `./mesh resources` (executed, 2026-09-29)
+
+- Readings checked against this machine (Ryzen 7 3700X, RTX 3060): CPU temperature from `k10temp Tctl` (matches the board's own `CPU Temperature` sensor within 1 °C), GPU load, memory, temperature, power and fan from `nvidia-smi`, per-process GPU memory parsed from `nvidia-smi --query-compute-apps` (5,840 MiB for the Qwen3 8B CUDA runtime; the page itself was checked with a CPU-only test node, so that column was not seen filled in the browser), NVMe and motherboard temperatures, and two fans.
+- Browser (Chrome): tiles, meters and 5-minute trend lines with a hover readout, per-thread bars, the "What Werewolf uses" table (node, SmolLM2 runtime and scorer), sensors and disk.
+- `tests/unit/resources.test.ts` (parsers and a live reading) and an integration check that `/admin/system` is refused to a client token (403).
+- Not checked: AMD and Intel GPUs, Intel `coretemp`, macOS and Windows (only the portable readings apply there).
+
+## Web research (executed, 2026-09-29)
+
+- `tests/unit/agent.test.ts` (56 cases):
+  - an SSRF matrix: 22 blocked addresses including metadata, CGNAT, IPv4-mapped, NAT64 and 6to4; decimal, octal and hex spellings; schemes, ports and credentials; a name with one private address among public ones
+  - against a live local server: redirect to the metadata address refused, redirect loop stopped, size cap while streaming, non-page types, a page that never finishes
+  - page extraction and passage choice; when to search, and the query rules
+  - a model trying to smuggle a URL into its query is never fetched
+- `tests/integration/web.test.ts` (real node process, fake model, stand-in SearXNG and pages): step and source chunks precede the answer; the PDF is not read; a metadata-address result is dropped; the model's prompt grows by the page text; "auto" only when asked; client tokens cannot search (403 for "on"); search down gives `tool_failed`, both HTTP and in-stream.
+- Real SearXNG (`./mesh search start`, image 2026.9.29) on the real internet:
+  - SmolLM2 135M: wolf pack size, and "tallest mountain in the Alps" (Mont Blanc, 4,806 m, from Wikipedia) in the browser
+  - Qwen3 4B on the CPU: llama.cpp releases, answered with [2]/[3] citations from GitHub's release page. Reading the 2,319-token prompt took 104 s, which the fixed 30 s first-token timeout had cut off; the allowance now grows with the prompt.
+- Seen in practice: some sites refuse automated readers (HTTP 403, whatever the user agent). The pipeline tries up to 4 results and falls back to search summaries.
+- Not run: web research with Qwen3 8B on the GPU node (that node runs the pre-change build and was not restarted).
+
+## Splitting a model across machines (executed, 2026-09-29)
+
+- `tests/real/split.test.ts`: two real node processes; node2 lends CPU memory, and node1 splits Qwen3.5 0.8B half and half.
+  - With temperature 0, the split answer is **token-for-token identical** to the unsplit answer, both before and after the lender is lost and returns.
+  - A lender that hasn't allowed node1 refuses it, and node1 says "does not lend to this node".
+  - Killing the lender mid-answer gives an interrupted answer (no `[DONE]`), and its `ggml-rpc-server` dies with it. The model then says "waiting for them", and splits again once the lender is back.
+- Direct llama.cpp check: for Qwen3.5 0.8B, Qwen3 1.7B and SmolLM2, split and unsplit answers are identical at temperature 0.
+- By hand, with a CUDA node and a CPU lender:
+  - Qwen3 4B split answered correctly at 14.4 tokens/s.
+  - Qwen3 8B at 80/50/20% on the GPU: 17 / 9 / 6.2 tokens/s, against 55 unsplit.
+  - The automatic policy correctly kept the 8B model whole on the GPU because it fits.
+  - The UI lend card and split control were checked in Chrome.
+- Found and fixed along the way:
+  - llama.cpp puts RPC devices *first* in `--tensor-split`, so our first split order was reversed.
+  - A lender reports all of its RAM as free, so llama.cpp's own split gave the slow CPU most of the model.
+  - A llama-server that ignores SIGTERM could outlive a killed node: the parent-death signal is now SIGKILL, and the scorer now escalates to SIGKILL and cannot start after shutdown.
+- `tests/unit/split.test.ts`: the placement plan and the GGUF header reader (block counts checked against all 10 local models).
+- **Not tested between two physical machines.**
+
+## External engines (executed against a stand-in, 2026-09-29)
+
+- `tests/integration/engines.test.ts` with `tests/standin-engine.ts`, an OpenAI-compatible server shaped like ds4-server's API:
+  - operator-only access, and a wrong API key reported;
+  - node2 discovers and uses a model only node1 knows, marked `runtime: external`;
+  - the thinking switch and the thinking budget (stopped at 512);
+  - the engine goes down, is withdrawn from the pack, and returns by itself;
+  - removal.
+- **Not tested against real ds4-server:** its models need 96 GB+ of memory.
+
+## WLF rewards (executed, 2026-09-29)
+
+- `tests/unit/rewards.test.ts` (18 cases, real Ed25519 signatures): honest pro-rata payout; exclusions (self-use, same network from either side, test runtime, short answers, duplicates); plus the attacks:
+  - a ring of 6 fake nodes vouching for each other earns 0;
+  - 1,000 fake accounts vouched by one person get almost no trust, while a seed approving 50 peers is not diluted;
+  - one colluder can't make a farm node qualify, and gets capped;
+  - two colluders are bounded by caps × trust;
+  - forged receipts, receipts submitted by the wrong node, and tampered bundles are rejected;
+  - 20 empty nodes change nothing, and halving starts at 16 qualified nodes;
+  - fake users can't inflate the node-count pool (at most 50 WLF instead of 800);
+  - trust is conserved down vouch chains;
+  - settlement is deterministic.
+
+  Same-network detection is tested on LAN, loopback, CGNAT, the same IPv6 /56, other networks and relayed connections.
+- `tests/integration/rewards.test.ts` (3 real node processes, in rewards test mode): own use earns nothing; 3 answers served to 2 other nodes give 3 verified receipts; a correctly signed receipt for a job that never ran is refused ("no such job"); settlements signed by the wrong key, or tampered after signing, are refused; the right one is imported and shows in the balance; a client token gets 403.
+- CLI smoke test on a 3-node test cluster: `rewards export → settle → verify → import`. `verify` reports "identical" for the real settlement, and INVALID / DIFFERENT (exit 1) for a copy with its pool edited.
+- The real-model suite passes with rewards hooks active.
+- Found while testing: the first design let trust multiply along vouch chains (each level passed on 4× what it received) and let fake users qualify farm nodes that inflate the node-count pool. Trust is now conserved, and the pool follows the trust of the people served.
+- **Not tested:** real multi-operator use, and parameter tuning with real traffic.
 
 ## Not validated (the environment could not provide it)
 

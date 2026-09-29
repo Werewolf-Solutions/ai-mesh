@@ -34,6 +34,10 @@ export interface Message {
   effort?: string;
   /** Pack notes the gateway gave the model for this answer. */
   packNotes?: Array<{ id: string; title: string; solution?: string; similarity: number }>;
+  /** Web research done before this answer: steps as they happened, and the sources the model was given. */
+  steps?: Array<{ kind: string; status: 'running' | 'done' | 'failed'; text: string }>;
+  sources?: Array<{ n: number; title: string; url: string; kind: 'page' | 'snippet' }>;
+  webQuery?: string | null;
   /** Set on an answer after it was shared with the pack. */
   sharedNoteId?: string;
   /** UI-only message (e.g. "share this with the pack" and its confirmation): never sent to the model. */

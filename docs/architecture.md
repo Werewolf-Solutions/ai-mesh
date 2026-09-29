@@ -7,7 +7,7 @@ In v0.1 every full node loads the *entire* model and can answer any request by i
 - serving capacity (one more concurrent generation, plus eight queued, per node by default)
 - availability (another place a request can go when a node fails)
 
-Adding a node does **not** add model quality, context length, pooled RAM/VRAM, or faster single-request generation. No part of a model is executed across machines. Splitting large models across machines is roadmap work.
+Adding a node does **not** add model quality, context length, or faster single-request generation. Normally every node runs whole models. The exception is **splitting** ([split.md](split.md)): an operator can place part of one model in memory lent by trusted peers, which lets a model too big for one machine run, more slowly. Stage redundancy and routing across split chains are roadmap work.
 
 ## Components
 

@@ -9,7 +9,10 @@ The HTTP API is how browsers and clients reach a gateway. It is separate from th
 | `GET /health/live`, `GET /health/ready` | Anonymous; minimal information |
 | `GET /v1/models`, `POST /v1/chat/completions`, `GET /v1/mesh/whoami` | Client token or admin token |
 | `GET /admin/models`, `POST /admin/models/:id/install\|cancel\|unhost`, `DELETE /admin/models/:id` | Admin token (this node's operator only) |
-| `GET /admin/status`, `/admin/peers`, `/admin/metrics`, `/admin/model`, `POST /admin/reload-admission` | Admin token |
+| `GET /admin/status`, `/admin/peers`, `/admin/metrics`, `/admin/model`, `/admin/system`, `POST /admin/reload-admission` | Admin token |
+| `GET /admin/split`, `POST /admin/split/lend`, `POST /admin/models/:id/split` | Admin token ([split.md](split.md)) |
+| `GET /admin/engines`, `POST /admin/engines`, `DELETE /admin/engines/:id` | Admin token ([engines.md](engines.md)) |
+| `GET /admin/rewards`, `GET /admin/rewards/bundle`, `POST /admin/rewards/settlement` | Admin token ([rewards.md](rewards.md)) |
 | `/` (UI files) | Anonymous; contains no secrets |
 
 - Send tokens as `Authorization: Bearer <token>`. They live in `data/<node>/secrets.json`: `clientTokens[]` and `adminToken`.
@@ -36,7 +39,7 @@ The HTTP API is how browsers and clients reach a gateway. It is separate from th
 
 **Rejected with `400 unsupported`:**
 
-- `tools`, `tool_choice`, `functions`, `function_call`, `parallel_tool_calls`
+- `tools`, `tool_choice`, `functions`, `function_call`, `parallel_tool_calls` (the mesh runs its own tools; see `mesh.web`)
 - `logprobs`, `top_logprobs`, `logit_bias`
 - `response_format`, `audio`, `modalities`, `prediction`, `web_search_options`
 
@@ -45,6 +48,7 @@ Image or other non-text content parts, and any unknown field, get `400 bad_reque
 **Mesh extensions:**
 
 - `"mesh": {"target": "auto" | "local" | "<peerId>", "timeout_ms": 1000–900000}`. `target` pins execution (no failover).
+- `"mesh": {"web": "on" | "auto" | "off"}`: web research before answering (see below). Default `off`.
 - Header `X-Mesh-Prefer: <peerId>`: try that worker first, with normal failover.
 
 **Non-streaming response:** the standard `chat.completion` body plus
@@ -67,6 +71,23 @@ and the headers `X-Mesh-Worker`, `X-Mesh-Gateway`, `X-Mesh-Route` and `X-Mesh-Ru
 - **Success** ends with a chunk that has `finish_reason` and `usage`, followed by `data: [DONE]`.
 - **Failure after output** sends `data: {"error": {"code": "interrupted", "message": …, "mesh": …}}` and ends **without** `[DONE]`.
 - A stream that ends without `[DONE]`, for whatever reason, must be treated as interrupted. `@werewolf-mesh/client` does exactly this.
+
+## Web research
+
+With `"mesh": {"web": "on"}` the gateway searches the web, reads up to 2 pages and gives them to the model before it answers. `"auto"` does this only when the last message asks for it (a link, "search the web for …", news). How it works and its safety rules are in [agents.md](agents.md).
+
+- **Who may use it:** the node's operator (admin token or trusted loopback). With a client token, `"on"` gets `403 forbidden` and `"auto"` answers without searching, unless the operator set `agent.web.allowClients`.
+- **Streaming:** the stream opens at the first step, before a worker is chosen. Step chunks have an empty `delta` and carry `mesh.agent`:
+
+  ```json
+  {"mesh": {"agent": {"step": {"kind": "search", "status": "done", "text": "8 results for “…”"}}}}
+  {"mesh": {"agent": {"sources": [{"n": 1, "title": "…", "url": "https://…", "kind": "page"}], "query": "…"}}}
+  ```
+
+  Step kinds: `query`, `search`, `read`, `answer`; statuses: `running`, `done`, `failed`. Worker attribution (`mesh.workerPeerId`, `route`) then arrives with the first text chunk rather than in the `X-Mesh-Worker` header. While a slow node reads the prompt, `: keep-alive` comments are sent every 15 s.
+- **Failure during research:** before the stream opens, an ordinary `502 tool_failed`. After it opened, an error event with code `tool_failed` and no `[DONE]`. Nothing has been answered, so the client may simply ask again.
+- **Non-streaming:** `mesh.web` = `{query, sources, steps}` on the response.
+- **Timing:** unless `timeout_ms` is set, web requests get the maximum deadline (`timeouts.maxDeadlineMs`, 5 min).
 
 ## Summary scoring (used by the UI's reading test)
 
@@ -101,6 +122,7 @@ The body is `{"error": {"message", "type", "code", "retry_after_ms"?, "mesh"?}}`
 | `worker_unreachable`, `worker_failed`, `runtime_error`, `protocol_error` | 502 | yes |
 | `connect_timeout`, `queue_timeout`, `first_token_timeout` | 504 | yes |
 | `interrupted` (stream only) | — | start a **new** answer |
+| `tool_failed` | 502 | a tool the gateway ran (web search) failed; ask again later |
 
 ## Health
 
@@ -115,6 +137,7 @@ The body is `{"error": {"message", "type", "code", "retry_after_ms"?, "mesh"?}}`
 
 ## Models
 
+- Time allowed before the first token: `timeouts.firstTokenMs` **plus 80 ms per prompt token**, so long prompts on CPU nodes are not cut off. This applies on the worker and on the gateway.
 - `GET /v1/models`: models some reachable node is serving now (usable by OpenAI clients). Each entry's `mesh` field holds name, thinking capability, context, download size, RAM, licence and `available: {nodes, local}`.
 - `GET /v1/models?all=1`: the whole vetted catalog. For the node's operator, each entry also has `local: {state, progress, error, fit}`, where state is `not_installed`, `downloading`, `verifying`, `starting`, `serving`, `installed` or `failed`.
 - `POST /admin/models/:id/install`: fit check, then resumable verified download, start and advertise, in the background. Poll `GET /admin/models` for progress.
@@ -122,3 +145,24 @@ The body is `{"error": {"message", "type", "code", "retry_after_ms"?, "mesh"?}}`
 - `POST /admin/models/:id/cancel` stops a download (the partial file is kept for resuming). `POST /admin/models/:id/unhost` stops serving. `DELETE /admin/models/:id` deletes a file that is not served.
 
 Thinking arrives as `delta.reasoning_content` in streams, and as `message.reasoning_content` in non-streaming replies. `mesh.model` and `mesh.effort` report what was used.
+
+## This computer's resources
+
+`GET /admin/system` (admin token) returns one reading of the machine the node runs on:
+
+- `cpu`: model, threads, `usagePct` and `perThreadPct` (since the previous reading), load average, clock, and `tempC` with the sensor it came from (`k10temp Tctl`, `coretemp Package id 0`, …)
+- `memory`: total, used, available and swap, in MB
+- `gpus[]`: name, load, memory, temperature, power and limit, fan and clock. NVIDIA comes from `nvidia-smi`; AMD from sysfs (`amdgpu`); Intel GPUs are listed without readings.
+- `disk`: free and total space on the disk holding the data directory
+- `sensors`: every temperature and fan under `/sys/class/hwmon`
+- `mesh`: what Werewolf itself uses: the node process and each runtime (one per hosted model, plus the summary scorer), with RAM, CPU (100% = one thread busy) and, for CUDA, GPU memory
+
+A reading the machine cannot provide is `null`. The first request waits about 0.25 s to measure CPU use; requests less than a second apart share one reading. On macOS and Windows only CPU use, memory, load and disk are filled in. The readings are never sent to peers. `./mesh resources [--watch]` prints the same thing in the terminal.
+
+## Splitting and external engines
+
+- `GET /admin/split`: `{accel, lend: {enabled, peers, device, running, detail, tunnels: {active, total, refused, …}}, borrow: {peers: [{peerId, label, connected, lends, reason}]}, models: [{id, split}]}`
+- `POST /admin/split/lend` `{"enabled": true, "peers": ["<peerId>"], "device": "cpu" | "gpu"}`
+- `POST /admin/models/:id/split` `{"peers": ["<peerId>"], "localShare": 0.6}`: `peers: []` runs the model on this node only; without `localShare`, this node is filled first. The model restarts in the background; `GET /admin/models` shows its `local.split` and `local.detail`.
+- `POST /admin/engines` with the fields in [engines.md](engines.md) (`id`, `name`, `url`, …); `GET /admin/engines` lists them with status and fingerprint.
+- Responses served by an external engine carry `mesh.runtime: "external"`.

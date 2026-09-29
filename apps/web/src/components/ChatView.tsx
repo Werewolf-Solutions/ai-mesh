@@ -40,6 +40,8 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
   const [model, setModel] = usePersistent<string | undefined>('wam.model', undefined);
   const [effort, setEffort] = usePersistent<Effort>('wam.effort', 'low');
   const [openThinking, setOpenThinking] = useState<Set<string>>(new Set());
+  const [webOn, setWebOn] = usePersistent<boolean>('wam.web', false);
+  const [openSteps, setOpenSteps] = useState<Set<string>>(new Set());
   const cat = useCatalog(gateways[0]);
   const modelName = (id: string) => cat.models?.find((x) => x.id === id)?.name ?? id;
   const abortRef = useRef<AbortController | null>(null);
@@ -67,13 +69,16 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
       const r = await client.chat({
         model,
         effort,
+        // Toggle on: always search first. Off: only when the message asks for it ("search the web…", a link).
+        web: webOn ? 'on' : 'auto',
+        onStep: (_s, all) => patch({ steps: all }),
         onReasoning: (_t, full) => {
           thinkStart ||= performance.now();
           patch({ reasoning: full });
         },
         // Only complete exchanges are sent as context; interrupted/failed answers and UI-only messages are left out.
         messages: history.filter((m) => !m.meta && (m.role === 'user' || m.status === 'completed')).map((m) => ({ role: m.role, content: m.content })),
-        maxTokens: 256,
+        maxTokens: 512,
         signal: ctl.signal,
         onToken: (_t, full) => {
           if (thinkStart && !thinkEnd) {
@@ -85,7 +90,16 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
         onMeta: (meta) => patch({ worker: meta.workerPeerId, route: meta.route, gatewayUrl: meta.gatewayUrl, runtime: meta.runtime }),
       });
       const notes = r.status === 'completed' || r.status === 'interrupted' ? r.meta.packNotes : undefined;
-      const extra = r.status === 'completed' || r.status === 'interrupted' ? { reasoning: r.reasoning || undefined, model: r.meta.model, effort: r.meta.effort } : {};
+      const web = r.status === 'completed' || r.status === 'interrupted' ? r.meta.web : undefined;
+      const extra =
+        r.status === 'completed' || r.status === 'interrupted'
+          ? {
+              reasoning: r.reasoning || undefined,
+              model: r.meta.model,
+              effort: r.meta.effort,
+              ...(web ? { steps: web.steps.map((s) => (s.kind === 'answer' ? { ...s, status: 'done' as const, text: s.text.replace(/^Writing/, 'Wrote') } : s)), sources: web.sources, webQuery: web.query } : {}),
+            }
+          : {};
       if (r.status === 'completed') patch({ content: r.text, status: 'completed', attempts: r.meta.attempts, ...extra, ...(notes ? { packNotes: notes } : {}) });
       else if (r.status === 'interrupted') patch({ content: r.text, status: 'interrupted', error: r.error.message, attempts: r.meta.attempts, ...extra });
       else if (r.status === 'cancelled') patch({ content: r.text, status: 'cancelled' });
@@ -183,7 +197,11 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
             return (
               <article key={m.id} className="rise mb-8" aria-live={m.status === 'streaming' ? 'polite' : undefined}>
                 <div className="mb-2 flex flex-wrap items-center gap-2">
-                  {m.worker ? <NodeBadge peerId={m.worker} label={labels[m.worker]} route={m.route} /> : m.status === 'streaming' ? <span className="text-sm text-slate">Finding a node…</span> : null}
+                  {m.worker ? (
+                    <NodeBadge peerId={m.worker} label={labels[m.worker]} route={m.route} />
+                  ) : m.status === 'streaming' && !m.steps?.length ? (
+                    <span className="text-sm text-slate">Finding a node…</span>
+                  ) : null}
                   {m.model && <span className="text-xs text-slate">{modelName(m.model)}{m.effort ? ` · ${m.effort === 'none' || m.effort === 'minimal' ? 'fast' : m.effort === 'low' ? 'balanced' : m.effort === 'high' ? 'thorough' : m.effort}` : ''}</span>}
                   {m.runtime === 'fake' && <span className="rounded bg-blood px-1.5 text-xs text-paper">test runtime, not a model</span>}
                   {m.attempts && m.attempts.length > 1 && (
@@ -218,6 +236,13 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
                     </ul>
                   </div>
                 )}
+                {m.steps && m.steps.length > 0 && (
+                  <WebSteps
+                    m={m}
+                    open={m.status === 'streaming' || openSteps.has(m.id)}
+                    onToggle={() => setOpenSteps((s) => { const n = new Set(s); if (n.has(m.id)) n.delete(m.id); else n.add(m.id); return n; })}
+                  />
+                )}
                 {m.reasoning && (
                   <div className="mb-3 border-l-2 border-rule pl-3 text-sm">
                     {m.status === 'streaming' && !m.content ? (
@@ -244,8 +269,9 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
                   </div>
                 )}
                 <div className={`whitespace-pre-wrap font-display text-[1.075rem] leading-[1.65] ${m.status === 'streaming' && (m.content || !m.reasoning) ? 'caret' : ''} ${m.status === 'interrupted' ? 'text-ink/75' : ''}`}>
-                  {m.content}
+                  {m.sources?.length ? <Cited text={m.content} sources={m.sources} /> : m.content}
                 </div>
+                {m.sources && m.sources.length > 0 && m.status !== 'streaming' && <SourceList sources={m.sources} />}
                 {m.status && m.status !== 'streaming' && !done && (
                   <div className={`mt-3 flex flex-wrap items-center gap-3 border-l-2 pl-3 text-sm ${m.status === 'cancelled' ? 'border-rule text-slate' : 'border-blood text-blood'}`}>
                     <span className="whitespace-pre-wrap">{STATUS_TEXT[m.status]}{m.error && m.status !== 'cancelled' ? ` ${m.error}` : ''}</span>
@@ -292,6 +318,19 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
       >
         <ModelPicker cat={cat} model={model} effort={effort} onModel={setModel} onEffort={setEffort} disabled={busy} />
         <div className="mx-auto flex max-w-[72ch] items-end gap-2">
+          <button
+            type="button"
+            aria-pressed={webOn}
+            onClick={() => setWebOn(!webOn)}
+            title={webOn ? 'Every question is searched on the web first (from this computer, through your own search engine)' : 'Web search only when you ask for it ("search the web for…", or paste a link)'}
+            className={`flex h-11 shrink-0 items-center gap-1.5 rounded-xl border px-3 text-sm ${webOn ? 'border-moon bg-moon-soft text-ink' : 'border-rule text-slate hover:text-ink'}`}
+          >
+            <svg aria-hidden viewBox="0 0 20 20" className="size-4" fill="none" stroke="currentColor" strokeWidth="1.5">
+              <circle cx="10" cy="10" r="7.5" />
+              <path d="M2.5 10h15M10 2.5c2.2 2.3 3.2 4.8 3.2 7.5s-1 5.2-3.2 7.5c-2.2-2.3-3.2-4.8-3.2-7.5s1-5.2 3.2-7.5z" />
+            </svg>
+            <span>Web{webOn ? ' on' : ''}</span>
+          </button>
           <label htmlFor="composer" className="sr-only">
             Message
           </label>
@@ -306,7 +345,7 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
                 send();
               }
             }}
-            placeholder="Ask the pack…  (say “share this with the pack” to share the last answer)"
+            placeholder={webOn ? 'Ask anything: the web is searched first…' : 'Ask the pack…  (“search the web for …” or a link searches the web)'}
             className="min-h-[2.75rem] flex-1 resize-none rounded-xl border border-rule bg-paper px-3 py-2 text-ink placeholder:text-slate focus:border-moon focus:outline-none"
           />
           {busy ? (
@@ -323,6 +362,95 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
           Small models make mistakes, especially without thinking. Every node serving a model runs a full copy; more nodes add capacity, not intelligence.
         </p>
       </form>
+    </div>
+  );
+}
+
+const STEP_MARK = { running: '◌', done: '✓', failed: '✕' } as const;
+
+function WebSteps({ m, open, onToggle }: { m: Message; open: boolean; onToggle: () => void }) {
+  const steps = m.steps!;
+  const pages = m.sources?.filter((s) => s.kind === 'page').length ?? 0;
+  const failed = steps.some((s) => s.status === 'failed');
+  const summary = m.webQuery ? `Searched the web for “${m.webQuery}”` : 'Read the linked page';
+  return (
+    <div className="mb-3 border-l-2 border-moon pl-3 text-sm">
+      {m.status !== 'streaming' && (
+        <button type="button" className="text-slate underline decoration-rule underline-offset-2 hover:text-ink" aria-expanded={open} onClick={onToggle}>
+          {summary}
+          {pages ? ` · read ${pages} page${pages > 1 ? 's' : ''}` : ''}
+          {failed ? ' · some steps failed' : ''} · {open ? 'hide steps' : 'show steps'}
+        </button>
+      )}
+      {open && (
+        <ol className="mt-1 space-y-0.5">
+          {steps
+            .filter((s) => !(s.kind === 'query' && s.status === 'done'))
+            .map((s, i) => (
+              <li key={i} className={`flex gap-2 ${s.status === 'failed' ? 'text-blood' : s.status === 'running' ? 'text-ink' : 'text-slate'}`}>
+                <span aria-hidden className={s.status === 'running' ? 'animate-pulse' : ''}>
+                  {STEP_MARK[s.status]}
+                </span>
+                <span>
+                  {s.text}
+                  <span className="sr-only"> ({s.status})</span>
+                </span>
+              </li>
+            ))}
+        </ol>
+      )}
+    </div>
+  );
+}
+
+const safeHref = (u: string) => (/^https?:\/\//i.test(u) ? u : undefined);
+const hostOf = (u: string) => {
+  try {
+    return new URL(u).hostname.replace(/^www\./, '');
+  } catch {
+    return u;
+  }
+};
+
+/** Answer text with [n] turned into links to the n-th source. */
+function Cited({ text, sources }: { text: string; sources: NonNullable<Message['sources']> }) {
+  const parts = text.split(/(\[\d{1,2}\])/g);
+  return (
+    <>
+      {parts.map((p, i) => {
+        const n = /^\[(\d{1,2})\]$/.exec(p)?.[1];
+        const src = n ? sources.find((s) => s.n === Number(n)) : undefined;
+        if (!src) return p;
+        return (
+          <a key={i} href={safeHref(src.url)} target="_blank" rel="noopener noreferrer" title={`${src.title} (${hostOf(src.url)})`} className="align-super font-sans text-xs text-moon no-underline hover:underline">
+            [{n}]
+          </a>
+        );
+      })}
+    </>
+  );
+}
+
+function SourceList({ sources }: { sources: NonNullable<Message['sources']> }) {
+  return (
+    <div className="mt-3 text-sm">
+      <p className="text-slate">Sources (from the web, not checked by anyone):</p>
+      <ol className="mt-1 space-y-0.5">
+        {sources.map((s) => (
+          <li key={s.n} className="flex gap-2">
+            <span className="num text-slate">[{s.n}]</span>
+            <span className="min-w-0">
+              <a href={safeHref(s.url)} target="_blank" rel="noopener noreferrer" className="underline decoration-rule underline-offset-2 hover:decoration-moon">
+                {s.title}
+              </a>{' '}
+              <span className="text-slate">
+                {hostOf(s.url)}
+                {s.kind === 'snippet' ? ' · summary only' : ''}
+              </span>
+            </span>
+          </li>
+        ))}
+      </ol>
     </div>
   );
 }

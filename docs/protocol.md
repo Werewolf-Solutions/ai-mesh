@@ -88,6 +88,19 @@ gateway                                   worker
 
 The gateway keeps its write side open for the whole job. A worker that sees EOF or reset treats it as cancellation and stops generating.
 
+## `/werewolf-mesh/rpc/1.0.0` (splitting a model)
+
+A raw byte tunnel for llama.cpp's RPC backend ([split.md](split.md)); not framed JSON.
+
+- Registered only while the node lends memory. Peers learn it from identify, which is how a borrower knows who lends.
+- Accepted only from approved peers on the lender's list, over direct connections (`runOnLimitedConnection: false`); anything else is reset.
+- An accepted tunnel starts with one byte `0x57` from the lender, then carries bytes both ways between the borrower's llama-server and the lender's `ggml-rpc-server` on 127.0.0.1. The borrower checks that byte, so it can report "does not lend to this node" before starting llama-server.
+- Each TCP connection llama-server opens becomes one stream. At most 32 inbound streams per connection.
+
+## `/werewolf-mesh/receipt/1.0.0` (WLF receipts)
+
+One framed JSON message per stream (frame version 1): `{"v":1,"type":"receipt","signed":{"receipt":{…},"sig":"…"}}`, sent by the requester's node to the worker after a remote answer completes. The worker checks that the sender is the receipt's requester, that it is the receipt's worker, that it recently ran that exact job for that peer (same `requestId/attemptId`, model, and token counts within ±2), the Ed25519 signature over `werewolf-mesh/wlf/receipt/v1\n<canonical JSON>`, and that it's new. Otherwise it resets the stream. See [rewards.md](rewards.md).
+
 ## Versioning
 
 Protocol IDs carry a semantic version. An incompatible change gets a new ID (e.g. `/werewolf-mesh/infer/2.0.0`), and nodes may serve both during a transition. A frame with `v` other than 1 is rejected.

@@ -6,6 +6,8 @@ v0.1 proves the network layer: authenticated membership, discovery, routing, fai
 
 The goal is to serve models too big for any single community machine.
 
+**Done (first step):** one node can split a model across memory lent by trusted peers, using llama.cpp's RPC backend behind the authenticated mesh transport ([split.md](split.md)). Still missing, from the list below: stages served by several workers each (redundancy), routing across chains, and replica recovery. Today, losing a lender interrupts the model until that lender returns.
+
 - **Layer sharding.** A model's transformer blocks are split into contiguous ranges ("stages"). Each worker serves one or more stages, and a request flows through a *pipeline* of workers, passing activations between them. Petals (bigscience-workshop/petals) is the main reference design. llama.cpp's RPC backend is a possible building block, but it must never be exposed to untrusted networks, so it would sit behind the authenticated mesh transport.
 - **Redundancy per stage.** Every stage is held by at least *k* workers, typically 2–3. A routing layer picks a chain of workers (one per stage) using measured latency and load, like today's router extended to paths.
 - **Replica recovery.** When a stage loses holders, spare-capacity nodes fetch and load the missing stage's weights (see §5) until the replication target is met again. Mid-generation, losing a stage holder needs a KV-cache strategy: either re-run the prompt on a replacement chain (visible as a restart, consistent with today's "interrupted, retry" rule), or keep shadow caches on a second chain (more expensive).

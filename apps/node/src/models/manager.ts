@@ -22,6 +22,11 @@ import { atomicWriteJson, exists, readJsonIfExists } from '../util/fs.js';
 import type { Logger } from '../util/log.js';
 import { WorkerPool } from '../worker/pool.js';
 import { WorkerService } from '../worker/service.js';
+import type { SplitTunnels } from '../split/split.js';
+import { ggufBlockCount } from '../split/gguf.js';
+import { planSplit } from '../split/plan.js';
+import { EngineAdapter } from '../runtime/engine.js';
+import { EngineConfig, engineEntry, isExternal, loadEngines, remoteEngineEntry, saveEngines, type EngineInput } from './engines.js';
 import { detectGpus, estimateVramMB, gpuBinaryPath, gpuBuildInstalled, installGpuBuild, type Accel, type GpuBackend, type GpuInfo } from './gpu.js';
 
 export interface HostedModel {
@@ -41,7 +46,15 @@ interface Job {
   ctl: AbortController;
 }
 
-const StateFile = z.object({ version: z.literal(1), hosted: z.array(z.string()).max(16), accel: z.enum(['cpu', 'cuda', 'vulkan']).optional() });
+const StateFile = z.object({
+  version: z.literal(1),
+  hosted: z.array(z.string()).max(16),
+  accel: z.enum(['cpu', 'cuda', 'vulkan']).optional(),
+  /** Model ID → peers whose memory it is split across (docs/split.md). */
+  split: z.record(z.string(), z.array(z.string().max(128)).max(8)).optional(),
+  /** Model ID → fraction kept on this node (operator override; default: fill this node first). */
+  splitShare: z.record(z.string(), z.number().min(0).max(1)).optional(),
+});
 
 /** Synthetic catalog entries for the fake test runtime. */
 function fakeEntry(id: string, order: number): CatalogEntry {
@@ -73,6 +86,13 @@ export class ModelManager {
   accel: Accel = 'cpu';
   private runtimeJob: { backend: Accel; phase: 'downloading' | 'restarting'; done: number; total: number; error?: string } | null = null;
   private gpus: GpuInfo[] = [];
+  /** Model ID → lenders it is split across. */
+  private split: Record<string, string[]> = {};
+  private splitShare: Record<string, number> = {};
+  private tunnels: SplitTunnels | undefined;
+  private engines: EngineConfig[] = [];
+  /** Fingerprints other nodes serve (to show external models this node has no catalog entry for). */
+  private remoteFingerprints: () => string[] = () => [];
   private readonly stateFile: string;
   readonly fake: boolean;
 
@@ -96,22 +116,37 @@ export class ModelManager {
       const saved = await readJsonIfExists(this.stateFile).then((r) => (r ? StateFile.parse(r).hosted : null)).catch(() => null);
       const chosen = (saved ?? this.deps.cfg.model.host).filter((id) => this.catalog.has(id));
       this.hosted = chosen.length ? chosen : [...this.deps.cfg.runtime.fakeModels];
+      // External engines are real servers and work the same on test nodes.
+      this.engines = await loadEngines(this.deps.dataDir).catch(() => []);
+      this.engines.forEach((c, i) => {
+        this.catalog.set(c.id, engineEntry(c, 1000 + i));
+        if (!this.hosted.includes(c.id)) this.hosted.push(c.id);
+      });
       return;
     }
     for (const e of await loadCatalog(this.deps.cfg.model.catalog)) this.catalog.set(e.id, e);
     const state = await readJsonIfExists(this.stateFile).then((r) => (r ? StateFile.parse(r) : null)).catch(() => null);
     const saved = state?.hosted ?? null;
+    this.split = state?.split ?? {};
+    this.splitShare = state?.splitShare ?? {};
     this.accel = state?.accel ?? (this.deps.cfg.runtime.gpu === 'none' ? 'cpu' : this.deps.cfg.runtime.gpu);
     this.gpus = await detectGpus();
     if (this.accel !== 'cpu' && !gpuBuildInstalled(this.deps.runtimePin, this.accel)) {
       this.deps.log.warn({ accel: this.accel }, 'GPU build not installed; using the CPU until it is (./mesh gpu on)');
       this.accel = 'cpu';
     }
+    // External engines (ds4-server, LM Studio, …): in the catalog, and always served while configured.
+    this.engines = await loadEngines(this.deps.dataDir).catch((err) => {
+      this.deps.log.error({ err: (err as Error).message }, 'engines.json is invalid; ignoring it');
+      return [];
+    });
+    this.engines.forEach((c, i) => this.catalog.set(c.id, engineEntry(c, 1000 + i)));
     this.hosted = (saved ?? this.deps.cfg.model.host).filter((id) => {
       if (this.catalog.has(id)) return true;
       this.deps.log.warn({ model: id }, 'hosted model is not in the catalog; ignored');
       return false;
     });
+    for (const c of this.engines) if (!this.hosted.includes(c.id)) this.hosted.push(c.id);
     if (this.deps.cfg.runtime.mode === 'external' && this.hosted.length > 1) {
       this.deps.log.warn('runtime.mode "external" serves exactly one model; hosting only the first');
       this.hosted = this.hosted.slice(0, 1);
@@ -119,7 +154,23 @@ export class ModelManager {
   }
 
   fingerprintOf(e: CatalogEntry): string {
+    // External models: their artifact hash is the declared weights hash (see engines.ts).
+    if (e.family === 'external') return `${e.id}:ext:${e.artifact.sha256}`;
     return this.fake ? fakeFingerprint(e.id) : modelFingerprint(e);
+  }
+
+  attachRemote(fps: () => string[]): void {
+    this.remoteFingerprints = fps;
+  }
+
+  /** External models other nodes serve that are not in this node's catalog. */
+  private remoteExternal(): CatalogEntry[] {
+    const out: CatalogEntry[] = [];
+    for (const fp of this.remoteFingerprints()) {
+      const e = remoteEngineEntry(fp, 2000 + out.length);
+      if (e && !this.catalog.has(e.id)) out.push(e);
+    }
+    return out;
   }
 
   /** Resolve a request's `model` (catalog ID or fingerprint). */
@@ -127,6 +178,7 @@ export class ModelManager {
     const byId = this.catalog.get(model);
     if (byId) return byId;
     for (const e of this.catalog.values()) if (this.fingerprintOf(e) === model) return e;
+    for (const e of this.remoteExternal()) if (e.id === model || this.fingerprintOf(e) === model) return e;
     return undefined;
   }
 
@@ -148,9 +200,50 @@ export class ModelManager {
 
   private makeAdapter(e: CatalogEntry): InferenceAdapter {
     const cfg = this.deps.cfg;
+    if (isExternal(e)) {
+      return new EngineAdapter({
+        id: e.id,
+        url: e.external.url,
+        ...(e.external.model ? { model: e.external.model } : {}),
+        ...(e.external.apiKeyFile ? { apiKeyFile: e.external.apiKeyFile } : {}),
+        thinkingControl: e.external.thinkingControl,
+        log: this.deps.log.child({ component: 'engine', model: e.id }),
+      });
+    }
     if (this.fake) return new FakeAdapter(cfg.runtime.fakeTokenDelayMs);
+    const lenders = this.split[e.id] ?? [];
     return new LlamaCppAdapter({
       name: e.id,
+      ...(lenders.length
+        ? {
+            rpcServers: async () => {
+              if (!this.tunnels) throw new Error('splitting is not available on this node');
+              const r = await this.tunnels.endpoints(lenders);
+              const missingText = r.missing.map((m) => `${m.peer.slice(-6)} ${m.reason}`).join('; ');
+              // How much stays here: fill this node first, the lenders get the rest.
+              const gpus = this.accel === 'cpu' ? [] : await detectGpus();
+              const freeLocalMB = this.accel === 'cpu' ? freemem() / 2 ** 20 : (gpus.find((g) => g.freeMB)?.freeMB ?? 0);
+              const plan = planSplit({
+                accel: this.accel,
+                freeLocalMB,
+                modelMB: this.accel === 'cpu' ? e.resources.ramMB : this.vramOf(e),
+                blocks: (await ggufBlockCount(modelPath(e, this.deps.cfg.model.dir)).catch(() => null)) ?? 32,
+                lenders: lenders.length,
+                ...(this.splitShare[e.id] !== undefined ? { localShare: this.splitShare[e.id] } : {}),
+              });
+              if (!plan.use) return { endpoints: [], detail: plan.note };
+              if (!r.endpoints.length) throw new Error(`split across ${lenders.length} other node${lenders.length > 1 ? 's' : ''}, but none can be used now (${missingText}); waiting for them`);
+              // Re-plan for the lenders actually reachable.
+              const used = r.endpoints.length === lenders.length ? plan : planSplit({ accel: this.accel, freeLocalMB, modelMB: this.accel === 'cpu' ? e.resources.ramMB : this.vramOf(e), blocks: (await ggufBlockCount(modelPath(e, this.deps.cfg.model.dir)).catch(() => null)) ?? 32, lenders: r.endpoints.length, localShare: plan.localShare });
+              return {
+                endpoints: r.endpoints,
+                gpuLayers: used.gpuLayers,
+                ...(used.tensorSplit ? { tensorSplit: used.tensorSplit } : {}),
+                detail: `split: ${used.note}${r.missing.length ? ` (${missingText})` : ''}`,
+              };
+            },
+          }
+        : {}),
       thinking: e.capabilities.thinking,
       mode: cfg.runtime.mode,
       binary: this.accel === 'cpu' ? cfg.runtime.binary : (gpuBinaryPath(this.deps.runtimePin, this.accel) ?? cfg.runtime.binary),
@@ -192,7 +285,7 @@ export class ModelManager {
     this.hosts.set(id, h);
     this.failures.delete(id);
     try {
-      if (!this.fake && cfg.runtime.mode === 'spawn') {
+      if (!this.fake && cfg.runtime.mode === 'spawn' && !isExternal(e)) {
         const v = await verifyModel(e, cfg.model.dir);
         if (!v.ok) throw new Error(v.reason === 'absent' ? `model file not installed (${e.artifact.filename})` : `model file failed verification: ${v.detail}`);
         this.deps.log.info({ model: id, ms: v.ms }, 'model verified against its catalog manifest');
@@ -216,26 +309,36 @@ export class ModelManager {
   }
 
   private async persist(): Promise<void> {
-    await atomicWriteJson(this.stateFile, { version: 1, hosted: this.hosted, accel: this.accel });
+    await atomicWriteJson(this.stateFile, {
+      version: 1,
+      hosted: this.hosted,
+      accel: this.accel,
+      ...(Object.keys(this.split).length ? { split: this.split } : {}),
+      ...(Object.keys(this.splitShare).length ? { splitShare: this.splitShare } : {}),
+    });
   }
 
   /** Resource check before installing/hosting: RAM for all hosted models + this one, and disk for the download. */
   async fit(id: string): Promise<{ ok: boolean; reasons: string[] }> {
     const e = this.catalog.get(id);
     if (!e) return { ok: false, reasons: ['not in the catalog'] };
-    if (this.fake) return { ok: true, reasons: [] };
+    if (this.fake || isExternal(e)) return { ok: true, reasons: [] };
     const reasons: string[] = [];
     const MB = 2 ** 20;
+    // A split model's memory is spread over this node and its lenders; llama.cpp places layers by free memory on each.
+    const isSplit = (this.split[id]?.length ?? 0) > 0;
     const others = [...this.hosts.values()].filter((h) => h.entry.id !== id && h.state !== 'failed');
     const total = totalmem() / MB;
     const ramOf = (x: CatalogEntry) => (this.accel === 'cpu' ? x.resources.ramMB : Math.max(512, x.resources.ramMB - this.vramOf(x)));
     const hostedRam = others.reduce((n, h) => n + ramOf(h.entry), 0);
-    if (hostedRam + ramOf(e) > total * 0.85) {
+    if (isSplit) {
+      /* memory is checked by llama.cpp across all devices when it loads */
+    } else if (hostedRam + ramOf(e) > total * 0.85) {
       reasons.push(`needs about ${(ramOf(e) / 1024).toFixed(1)} GB of RAM; with the models already running that is more than this machine has (${(total / 1024).toFixed(1)} GB)`);
     } else if (ramOf(e) > freemem() / MB + 256) {
       reasons.push(`needs about ${(ramOf(e) / 1024).toFixed(1)} GB of free RAM; ${(freemem() / 2 ** 30).toFixed(1)} GB is free right now`);
     }
-    if (this.accel !== 'cpu') {
+    if (this.accel !== 'cpu' && !isSplit) {
       const vram = this.gpus.find((g) => g.vramMB)?.vramMB;
       const used = others.reduce((n, h) => n + this.vramOf(h.entry), 0);
       if (vram && used + this.vramOf(e) > vram * 0.95) {
@@ -339,6 +442,111 @@ export class ModelManager {
     })();
   }
 
+  engineList(): EngineConfig[] {
+    return [...this.engines];
+  }
+
+  /** Add or replace an external engine and start serving it. */
+  async addEngine(input: EngineInput): Promise<void> {
+    const c = EngineConfig.parse(input);
+    const existing = this.catalog.get(c.id);
+    if (existing && !isExternal(existing)) throw new MeshError('bad_request', `"${c.id}" is a catalog model; choose another ID`);
+    this.engines = [...this.engines.filter((x) => x.id !== c.id), c];
+    await saveEngines(this.deps.dataDir, this.engines);
+    this.catalog.set(c.id, engineEntry(c, 1000 + this.engines.length));
+    if (!this.hosted.includes(c.id)) this.hosted.push(c.id);
+    await this.persist();
+    await this.restartModel(c.id);
+  }
+
+  async removeEngine(id: string): Promise<void> {
+    if (!this.engines.some((x) => x.id === id)) throw new MeshError('bad_request', `no engine "${id}"`);
+    const h = this.hosts.get(id);
+    if (h) {
+      h.pool.draining = true;
+      await h.adapter.stop().catch(() => undefined);
+      this.hosts.delete(id);
+    }
+    this.engines = this.engines.filter((x) => x.id !== id);
+    await saveEngines(this.deps.dataDir, this.engines);
+    this.catalog.delete(id);
+    this.hosted = this.hosted.filter((x) => x !== id);
+    await this.persist();
+  }
+
+  /** Borrower side of splitting: the node wires its tunnels in once libp2p exists. */
+  attachSplit(tunnels: SplitTunnels): void {
+    this.tunnels = tunnels;
+  }
+
+  splitOf(id: string): string[] {
+    return [...(this.split[id] ?? [])];
+  }
+
+  /**
+   * Split a model across these lenders (empty = run on this node only). Restarts
+   * the model if it is being served. Answers in progress on it are interrupted.
+   */
+  async setSplit(id: string, peers: string[], localShare?: number): Promise<void> {
+    if (!this.catalog.has(id)) throw new MeshError('bad_request', `unknown model ${id}`);
+    if (this.fake) throw new MeshError('bad_request', 'the fake runtime cannot be split');
+    if (this.deps.cfg.runtime.mode === 'external') throw new MeshError('bad_request', 'this node uses an external runtime');
+    const uniq = [...new Set(peers)];
+    if (uniq.length > 8) throw new MeshError('bad_request', 'at most 8 lenders per model');
+    if (uniq.length) this.split[id] = uniq;
+    else delete this.split[id];
+    if (uniq.length && localShare !== undefined) this.splitShare[id] = localShare;
+    else delete this.splitShare[id];
+    await this.persist();
+    if (this.hosted.includes(id)) await this.restartModel(id);
+  }
+
+  /** Stop and start one hosted model (drains for up to 10 s). */
+  async restartModel(id: string): Promise<void> {
+    const h = this.hosts.get(id);
+    if (h) {
+      h.state = 'stopping';
+      h.pool.draining = true;
+      const end = Date.now() + 10_000;
+      while ((h.pool.activeCount > 0 || h.pool.queuedCount > 0) && Date.now() < end) await new Promise((r) => setTimeout(r, 100));
+      await h.adapter.stop().catch(() => undefined);
+      this.hosts.delete(id);
+    }
+    await this.startModel(id).catch((err) => this.deps.log.error({ model: id, err: (err as Error).message }, 'model failed to start'));
+  }
+
+  /**
+   * A lender became reachable: restart split models that are waiting for it
+   * (failed), or that run with fewer lenders than configured and are idle.
+   */
+  async onLenderAvailable(peer: string): Promise<void> {
+    for (const [id, peers] of Object.entries(this.split)) {
+      if (!peers.includes(peer) || !this.hosted.includes(id)) continue;
+      const h = this.hosts.get(id);
+      const detail = h?.adapter.status().detail ?? '';
+      const degraded = !h || h.state === 'failed' || !h.adapter.status().ready || /unavailable|not connected|not lending|relay/.test(detail);
+      const idle = !h || (h.pool.activeCount === 0 && h.pool.queuedCount === 0);
+      if (degraded && idle && h?.state !== 'starting' && h?.state !== 'stopping' && h?.state !== 'verifying') {
+        this.deps.log.info({ model: id, lender: peer }, 'lender available again; restarting the split model');
+        await this.restartModel(id);
+      }
+    }
+  }
+
+  /**
+   * Retry split models that are waiting for lenders (a lender may have been
+   * allowed, or reconnected, without any event reaching this node). Called
+   * periodically by the node.
+   */
+  async retryWaitingSplits(): Promise<void> {
+    for (const id of Object.keys(this.split)) {
+      if (!this.hosted.includes(id)) continue;
+      const h = this.hosts.get(id);
+      const failed = !h || h.state === 'failed' || h.adapter.status().state === 'failed';
+      if (failed && (!h || (h.pool.activeCount === 0 && h.pool.queuedCount === 0))) await this.restartModel(id);
+    }
+  }
+
   /** Download (if needed), verify, start and host a catalog model. Runs in the background; poll views(). */
   async install(id: string): Promise<void> {
     const e = this.catalog.get(id);
@@ -412,7 +620,7 @@ export class ModelManager {
   /** Catalog as seen from this node. `servedBy` counts reachable peers serving each fingerprint. */
   async views(servedBy: (fp: string) => number, admin: boolean): Promise<CatalogModelView[]> {
     const out: CatalogModelView[] = [];
-    for (const e of this.catalog.values()) {
+    for (const e of [...this.catalog.values(), ...this.remoteExternal()]) {
       const fp = this.fingerprintOf(e);
       const h = this.hosts.get(e.id);
       const localServing = !!h && h.state === 'serving' && h.adapter.status().ready;
@@ -439,12 +647,14 @@ export class ModelManager {
         if (job) state = job.phase === 'downloading' ? 'downloading' : job.phase === 'verifying' ? 'verifying' : 'starting';
         else if (h) state = h.state === 'serving' ? (localServing ? 'serving' : 'starting') : h.state === 'failed' ? 'failed' : h.state === 'stopping' ? 'stopping' : h.state === 'verifying' ? 'verifying' : 'starting';
         else if (this.failures.has(e.id)) state = 'failed';
-        else state = this.fake || (await exists(modelPath(e, this.deps.cfg.model.dir))) ? 'installed' : 'not_installed';
+        else state = this.fake || isExternal(e) || (await exists(modelPath(e, this.deps.cfg.model.dir))) ? 'installed' : 'not_installed';
         v.local = {
           state,
           ...(job ? { progress: { done: job.done, total: job.total } } : {}),
           ...(this.failures.has(e.id) || h?.state === 'failed' ? { error: this.failures.get(e.id) ?? h?.detail } : {}),
           fit: state === 'serving' ? { ok: true, reasons: [] } : await this.fit(e.id),
+          ...(this.split[e.id]?.length ? { split: [...this.split[e.id]!] } : {}),
+          ...(h ? { detail: h.adapter.status().detail } : {}),
         };
       }
       out.push(v);
