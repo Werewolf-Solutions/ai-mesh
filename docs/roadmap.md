@@ -1,6 +1,8 @@
 # Roadmap
 
-v0.1 proves the network layer: authenticated membership, discovery, routing, failover and relays around one small, fully replicated model. None of the items below exist yet.
+v0.1 proved the network layer: authenticated membership, discovery, routing, failover and relays around one small, fully replicated model. v0.2 added a model catalog and effort levels, GPU workers, splitting a model across lent memory, external engines, WLF reward points and web research.
+
+Each section below says what is done and what is still missing. Agentic tools (the code pipeline next) are planned in [agents-design.md](agents-design.md).
 
 ## 1. Splitting large models across machines, with redundant copies
 
@@ -22,8 +24,10 @@ The goal is to serve models too big for any single community machine.
 
 ## 3. Faster GPU workers
 
-- CUDA/ROCm/Vulkan llama.cpp images with pinned digests, and advertised capability classes (context, tokens/s measured locally by the gateway, never self-reported).
-- Router weighting by measured throughput; separate queues per capability class.
+**Done:** pinned CUDA and Vulkan llama.cpp builds, `./mesh gpu on|off`, and routing by expected completion time using each node's speed as measured by the gateway, never self-reported ([gpu.md](gpu.md)). Still missing:
+
+- ROCm builds.
+- Separate queues per capability class.
 - Larger context budgets on nodes that can afford them, validated by the worker, as today.
 
 ## 4. Admission and governance for independent operators
@@ -41,10 +45,12 @@ The goal is to serve models too big for any single community machine.
 - Chunked transfer with resumption. Operators opt in to seeding, with bandwidth caps.
 - Manifest signing by the mesh's maintainers, so new members can verify which model a mesh runs.
 
-## 6. Optional contribution accounting
+## 6. Contribution accounting and WLF rewards
 
-- Local, non-transferable counters of work served to and received from each peer, for fairness in routing ("serve those who serve").
-- Explicitly **no** tokens, blockchain, staking or payments. Any shared accounting must survive operators lying about their own numbers, so it would rely on the counterpart's measurements.
+**Done:** WLF reward points ([rewards.md](rewards.md)). A node earns points only for answering other people's nodes. Each job is backed by a receipt signed by the node that asked, and receipts count only from requesters trusted through vouches. One settler signs a deterministic daily settlement that anyone can recompute with `./mesh rewards verify`. WLF are points with no value today. Next:
+
+- "Serve those who serve": use the same counterpart-measured counts for fairness in routing.
+- Move settlement from the single settler into an Ethereum smart contract, so the reward rules are enforced by the contract and any node can trigger a distribution once the criteria are met. Settlement is kept deterministic and verifiable so its rules can move there unchanged.
 
 ## 7. Pack memory, next steps
 
