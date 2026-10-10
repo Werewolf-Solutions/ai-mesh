@@ -6,6 +6,13 @@ A self-hosted, peer-to-peer network for running an openly licensed language mode
 
 ## What works
 
+The first [trusted coding farm](docs/farm.md) is also available: explicitly grant
+a peer permission to run bounded offline test/build routines on this computer.
+Source and results are encrypted, jobs survive requester restart, and worker
+loss interrupts work without replay. Farm mode is off by default; it requires
+Docker and trust in the worker owner. Coding agents and PSM integration remain
+separate milestones in the [implementation plan](docs/coding-farm-plan.md).
+
 Each full node:
 
 - lets you **choose a model and an effort level** ([docs/models.md](docs/models.md)):
@@ -47,6 +54,8 @@ Then, in another terminal:
 ```
 
 Open `http://127.0.0.1:8080/` for the chat UI. On this machine the node trusts loopback, so no token is needed. `./mesh ui-url` prints a URL that carries the tokens in the fragment, for browsers that need them.
+
+For livestreams, turn on **Stream privacy** in the header. It remembers the setting in this browser and replaces gateway addresses and names, peer identities, local paths, credentials, chat content, pack notes, routine packages/results and reading-test content with `***`, including their hover text. Private editors are disabled while masked; your stored values and running requests are preserved. Model controls and resource metrics stay visible. This masks the app display only: browser chrome, developer tools, terminals and downloaded exports still contain real data.
 
 To run it in the background, use `./mesh start --detach` and `./mesh stop`. Stopping never deletes data. `./mesh reset --data DIR --yes` is the only destructive command.
 

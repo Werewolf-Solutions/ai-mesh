@@ -1,3 +1,4 @@
+import { usePrivacy } from '../privacy';
 /**
  * A node drawn as a moon. The lit part shows how busy the node is (a full moon
  * is fully loaded); an unavailable node is an outlined new moon.
@@ -27,11 +28,12 @@ export function Moon({ load, available = true, size = 18, title }: { load: numbe
 
 /** Small attribution badge: which node answered. */
 export function NodeBadge({ peerId, label, route }: { peerId: string; label?: string | null; route?: string | null }) {
-  const hue = hueFor(peerId);
+  const { hidden, mask } = usePrivacy();
+  const hue = hidden ? 0 : hueFor(peerId);
   return (
-    <span className="inline-flex items-center gap-1.5 rounded-full border border-rule px-2 py-0.5 text-xs text-slate" title={peerId}>
+    <span className="inline-flex items-center gap-1.5 rounded-full border border-rule px-2 py-0.5 text-xs text-slate" title={mask(peerId)}>
       <span aria-hidden className="inline-block size-2 rounded-full" style={{ background: `oklch(0.65 0.12 ${hue})` }} />
-      <span className="text-ink">{label ?? `…${peerId.slice(-6)}`}</span>
+      <span className="text-ink">{mask(label ?? `…${peerId.slice(-6)}`)}</span>
       {route === 'remote' && <span>via the mesh</span>}
     </span>
   );

@@ -1,3 +1,4 @@
+import { Sensitive } from '../privacy';
 import type { CatalogModelView } from '@werewolf-mesh/protocol';
 import { useEffect, useRef, useState } from 'react';
 import { EFFORTS, gb, ramGb, type Effort, type useCatalog } from '../models';
@@ -98,7 +99,7 @@ export function ModelPicker({ cat, model, effort, onModel, onEffort, disabled }:
 
       {open && (
         <div role="listbox" aria-label="Choose a model" className="absolute bottom-full left-0 z-20 mb-2 max-h-[65vh] w-[min(34rem,calc(100vw-2rem))] overflow-y-auto rounded-xl border border-rule bg-sheet p-2 shadow-lg">
-          {cat.error && <p className="p-2 text-blood">{cat.error}</p>}
+          {cat.error && <p className="p-2 text-blood"><Sensitive>{cat.error}</Sensitive></p>}
           <Section title="Running in the pack">
             {ready.length === 0 && <p className="px-2 py-1 text-slate">Nothing yet.</p>}
             {ready.map((m) => (
@@ -133,7 +134,7 @@ export function ModelPicker({ cat, model, effort, onModel, onEffort, disabled }:
               </ModelRow>
             ))}
           </Section>
-          {err && <p className="px-2 pb-2 text-blood">{err}</p>}
+          {err && <p className="px-2 pb-2 text-blood"><Sensitive>{err}</Sensitive></p>}
           <p className="px-2 pb-1 pt-2 text-xs text-slate">
             Only vetted, openly licensed models from the Werewolf catalog can run on the mesh. Every node serving a model keeps a full copy; your computer shares the
             work with the rest of the pack.
@@ -210,7 +211,7 @@ function InstallControl({ m, operator, onInstall, onCancel }: { m: CatalogModelV
       <button type="button" onClick={onInstall} className="rounded-md bg-ink px-2.5 py-1 text-xs font-medium text-paper">
         {l.state === 'installed' ? 'Run on this computer' : `Download and run on this computer (${gb(m.downloadBytes)})`}
       </button>
-      {l.state === 'failed' && l.error && <span className="text-xs text-blood">Last try failed: {l.error}</span>}
+      {l.state === 'failed' && l.error && <span className="text-xs text-blood">Last try failed: <Sensitive>{l.error}</Sensitive></span>}
     </div>
   );
 }

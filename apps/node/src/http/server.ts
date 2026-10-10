@@ -43,6 +43,8 @@ import { codePipeline, resultNote, wantsCode, type CodeResult } from '../agent/c
 import { runPython } from '../agent/sandbox.js';
 import { NoteKind, PACK_LIMITS, scrub } from '@werewolf-mesh/protocol';
 import { z } from 'zod';
+import { FarmPolicy, FarmRef, FarmSubmit } from '@werewolf-mesh/protocol';
+import type { FarmService } from '../farm/service.js';
 
 const ShareRequest = z.strictObject({
   kind: NoteKind,
@@ -81,6 +83,7 @@ export interface HttpDeps {
   /** This computer's resources (local to the operator; never sent to peers). */
   system: () => Promise<SystemView>;
   rewards?: () => RewardsLedger;
+  farm?: FarmService;
   /** Splitting models across machines (docs/split.md). */
   split?: {
     lender: () => SplitLender;
@@ -629,6 +632,24 @@ export async function buildHttpServer(deps: HttpDeps): Promise<FastifyInstance> 
   app.get('/admin/metrics', { preHandler: requireRole('admin') }, async () => deps.metrics());
   app.get('/admin/model', { preHandler: requireRole('admin') }, async () => deps.modelInfo());
   app.get('/admin/system', { preHandler: requireRole('admin') }, async () => deps.system());
+
+  // Source export and remote execution require operator authority. Ordinary
+  // inference client tokens cannot submit, read, cancel or configure farm jobs.
+  const farm = () => { if (!deps.farm) throw new MeshError('not_ready', 'farm unavailable'); return deps.farm; };
+  const farmCall = async (fn: () => Promise<unknown> | unknown, reply: FastifyReply) => {
+    try { return await fn(); }
+    catch (e) { return sendError(reply, e instanceof MeshError ? e : new MeshError('bad_request', (e as Error).message.slice(0, 500))); }
+  };
+  app.get('/admin/farm', { preHandler: requireRole('admin') }, async () => farm().localView());
+  app.post('/admin/farm/policy', { preHandler: requireRole('admin') }, async (req, reply) => farmCall(() => farm().setPolicy(FarmPolicy.parse(req.body)), reply));
+  app.get('/admin/farm/peers/:peerId', { preHandler: requireRole('admin') }, async (req, reply) => farmCall(() => farm().discover((req.params as { peerId: string }).peerId), reply));
+  app.post('/admin/farm/jobs', { preHandler: requireRole('admin'), bodyLimit: 8 * 1024 * 1024 }, async (req, reply) => farmCall(() => {
+    const input = FarmSubmit.parse(req.body);
+    return farm().submit(input.package, input.targetPeerId);
+  }, reply));
+  app.post('/admin/farm/jobs/status', { preHandler: requireRole('admin') }, async (req, reply) => farmCall(() => farm().job(FarmRef.parse(req.body)), reply));
+  app.post('/admin/farm/jobs/cancel', { preHandler: requireRole('admin') }, async (req, reply) => farmCall(() => farm().action(FarmRef.parse(req.body), 'cancel'), reply));
+  app.post('/admin/farm/jobs/ack', { preHandler: requireRole('admin') }, async (req, reply) => farmCall(() => farm().action(FarmRef.parse(req.body), 'ack'), reply));
 
   // ---- WLF rewards (operator only; docs/rewards.md)
   app.get('/admin/rewards', { preHandler: requireRole('admin') }, async (_req, reply) => {

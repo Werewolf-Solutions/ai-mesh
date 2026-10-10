@@ -200,3 +200,10 @@ docker compose -f deploy/generated/cluster-3/compose.yaml start node1
 6. **Provider loss:** stop A mid-answer, and the answer is marked `[INTERRUPTED …]`. A new request is served by B locally.
 7. **Partition:** `sudo iptables -I INPUT -s A -j DROP` on B. Within about 15 s, B shows A unavailable and serves locally. Remove the rule, and they reconnect with backoff (≤ 60 s).
 8. **NAT/relay:** repeat with B behind home NAT and A on a VPS with `--relay-server`. Add a second home machine C. On C, `./mesh peers status` should show B as `relayed`.
+## Trusted coding farm
+
+See [farm setup and operations](farm.md) for manual farm mode, prepared pinned
+images, source/command review, submission, cancellation, encrypted storage and
+recovery. This release supports native Linux workers with Docker. The standard
+node container has no Docker CLI/socket and cannot execute farm routines; do not
+add a Docker socket to ordinary node containers to enable it.

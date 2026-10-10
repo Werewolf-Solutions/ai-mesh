@@ -68,3 +68,13 @@ Shipped in v0.1: anonymous notes, pull replication, merging, local reinforcement
 - Hot reload of TLS for a built-in HTTPS listener.
 - Per-token-budget request quotas per client token.
 - Answer quality checks are out of scope unless the operators explicitly want them.
+
+## 9. Trusted coding farm and PSM integration
+
+First routine release implemented on 2026-10-08: [trusted coding farm](farm.md).
+The [implementation plan](coding-farm-plan.md) tracks bounded open-model coding
+tasks, durable checkpoints and owner-priority farm scheduling. PSM retains
+planning, result acceptance and deployment. This explicitly requested evaluation
+adds coding-task quality gates; it does not introduce general answer scoring.
+The [PSM provider plan](../../psm/docs/roadmaps/ai-mesh-provider.md) follows the
+worker contract and preserves authorized machine-local commercial providers.

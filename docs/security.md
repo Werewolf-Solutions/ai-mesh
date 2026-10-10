@@ -12,7 +12,7 @@ v0.1 is for a **small group of operators who know and approve each other**. It i
   - Each node's own `authorized-peers.json`.
   - Discovery (bootstrap, hints, cache) never grants admission.
   - The network ID is a label, not a password.
-- **Remote capabilities:** peers can only exchange status and submit bounded inference jobs for the exact model fingerprint. They cannot run commands, read or write files, install models, change settings, fetch URLs, or make a worker forward jobs.
+- **Remote capabilities:** inference peers exchange status and submit bounded inference jobs for the exact model fingerprint. Membership alone does not permit commands or host file access. The separately opt-in [coding farm](farm.md) permits explicitly allowlisted requesters to execute bounded routines in disposable offline sandboxes, using approved pinned images and exported source. It grants no host file access, installation, settings changes or forwarding.
 - **Runtime isolation:**
   - Each hosted model's llama.cpp process listens on 127.0.0.1 with a random per-start API key, natively or inside the node container; no runtime port is ever published.
   - The web UI, tools, `/props` changes and slot saving are disabled.

@@ -254,7 +254,7 @@ export class ResourceMonitor {
   private prevCpu: CpuSample | undefined;
   private prevProc = new Map<number, { ticks: number; at: number }>();
   private prevSelf: { usage: NodeJS.CpuUsage; at: number } | undefined;
-  private cached: { at: number; view: Promise<SystemView> } | undefined;
+  private cached: { at: number; pending: boolean; view: Promise<SystemView> } | undefined;
 
   constructor(
     private readonly opts: {
@@ -268,10 +268,12 @@ export class ResourceMonitor {
   /** One reading. Readings less than a second apart share one result, so several open pages cost one scan. */
   snapshot(): Promise<SystemView> {
     const now = Date.now();
-    if (this.cached && now - this.cached.at < 900) return this.cached.view;
+    if (this.cached && (this.cached.pending || now - this.cached.at < 900)) return this.cached.view;
     const view = this.read();
-    this.cached = { at: now, view };
-    view.catch(() => {
+    this.cached = { at: now, pending: true, view };
+    void view.then(() => {
+      if (this.cached?.view === view) { this.cached.pending = false; this.cached.at = Date.now(); }
+    }, () => {
       if (this.cached?.view === view) this.cached = undefined;
     });
     return view;

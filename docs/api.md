@@ -184,3 +184,8 @@ A reading the machine cannot provide is `null`. The first request waits about 0.
 - `POST /admin/models/:id/split` `{"peers": ["<peerId>"], "localShare": 0.6}`: `peers: []` runs the model on this node only; without `localShare`, this node is filled first. The model restarts in the background; `GET /admin/models` shows its `local.split` and `local.detail`.
 - `POST /admin/engines` with the fields in [engines.md](engines.md) (`id`, `name`, `url`, …); `GET /admin/engines` lists them with status and fingerprint.
 - Responses served by an external engine carry `mesh.runtime: "external"`.
+## Coding farm extension
+
+The [farm API](farm.md#api-and-client-contract) is a separate admin-only surface
+for explicit remote routine execution. Chat/client credentials do not grant it.
+It does not change the OpenAI-compatible inference API.

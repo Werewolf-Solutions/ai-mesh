@@ -1,3 +1,4 @@
+import { usePrivacy } from '../privacy';
 import { useCallback, useEffect, useState } from 'react';
 import type { Gateway } from '../store';
 
@@ -12,6 +13,7 @@ interface RewardsView {
 
 /** WLF reward points: what this computer earned by answering other people's requests. */
 export function RewardsCard({ gateway }: { gateway: Gateway | undefined }) {
+  const { mask } = usePrivacy();
   const [v, setV] = useState<RewardsView | null>(null);
   const load = useCallback(async () => {
     if (!gateway) return;
@@ -40,7 +42,7 @@ export function RewardsCard({ gateway }: { gateway: Gateway | undefined }) {
         <div className="rounded-xl border border-rule bg-sheet p-4">
           <p className="text-sm text-slate">Settled balance</p>
           <p className="mt-1 text-3xl font-semibold tracking-tight">
-            {v.balance.total.toLocaleString(undefined, { maximumFractionDigits: 2 })} <span className="text-base font-normal text-slate">WLF</span>
+            {mask(v.balance.total.toLocaleString(undefined, { maximumFractionDigits: 2 }))} <span className="text-base font-normal text-slate">WLF</span>
           </p>
           <p className="mt-0.5 text-sm text-slate">{v.balance.epochs.length ? `from ${v.balance.epochs.length} settled day${v.balance.epochs.length > 1 ? 's' : ''}` : 'no day settled yet'}</p>
         </div>
@@ -54,8 +56,8 @@ export function RewardsCard({ gateway }: { gateway: Gateway | undefined }) {
         </div>
         <div className="rounded-xl border border-rule bg-sheet p-4">
           <p className="text-sm text-slate">Settler</p>
-          <p className="mt-1 truncate font-mono text-sm" title={v.settler ?? ''}>
-            {v.settler ? `…${v.settler.slice(-10)}` : 'not set'}
+          <p className="mt-1 truncate font-mono text-sm" title={mask(v.settler ?? '')}>
+            {mask(v.settler ? `…${v.settler.slice(-10)}` : 'not set')}
           </p>
           <p className="mt-0.5 text-sm text-slate">{v.enabled ? 'earning is on' : 'earning is off on this node'}</p>
         </div>
@@ -74,7 +76,7 @@ export function RewardsCard({ gateway }: { gateway: Gateway | undefined }) {
             {[...v.balance.epochs].reverse().map((e) => (
               <tr key={e.epoch} className="border-b border-rule">
                 <td className="py-1.5">{e.epoch}</td>
-                <td className="py-1.5 text-right">{e.wlf} WLF</td>
+                <td className="py-1.5 text-right">{mask(e.wlf)} WLF</td>
                 <td className="py-1.5 text-right">{e.pool} WLF</td>
                 <td className="py-1.5 text-right">
                   {e.qualifiedNodes}

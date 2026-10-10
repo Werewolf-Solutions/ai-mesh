@@ -19,6 +19,11 @@ import { ScorerManifestSchema } from './scoring/scorer.js';
 import { loadSecrets } from './secrets.js';
 import { atomicWriteFile, exists, looseModeWarning, readJsonIfExists } from './util/fs.js';
 import { REPO_ROOT, SOFTWARE_VERSION } from './version.js';
+import { FarmClient } from '@werewolf-mesh/client';
+import { FarmPolicy, FarmSubmit, FarmSpec, FarmResult } from '@werewolf-mesh/protocol';
+import { DEFAULT_FARM_IMAGE } from './farm/service.js';
+import { packageSource, sourceDigest } from './farm/source.js';
+import { randomUUID } from 'node:crypto';
 
 const HELP = `Werewolf AI Mesh ${SOFTWARE_VERSION} — self-hosted replicated inference network
 
@@ -56,6 +61,14 @@ Setup
   search start|stop|status              Run the local SearXNG search engine (Docker, 127.0.0.1 only) for web research
   search test "query"                   Show what the node's web search returns for a query
   code setup|status|test                Install and check the offline Python sandbox used to test code answers
+  farm status|on PEER...|off            Explicitly grant/offline remote routines (off by default)
+       [--image DIGEST] [--cpus N] [--memory N] [--disk N] [--timeout N]
+  farm discover PEER                    Inspect a peer's farm permission, images and limits
+  farm prepare --source DIR --target PEER --command "CMD"... --out FILE
+                                       Package bounded source for review; does not execute
+  farm run FILE --yes                   Submit the reviewed package to its selected worker
+  farm job|cancel|ack FILE              Inspect/cancel/ack the attempt from that package
+  farm artifacts FILE --out DIR        Export returned build files to a new directory
   model download|import|verify --scorer Same, for the optional embedding model that scores summaries in the UI
 
 Node
@@ -793,6 +806,87 @@ async function adminFetch(a: Args, path: string, method = 'GET'): Promise<unknow
   return j;
 }
 
+async function farmCmd(a: Args): Promise<void> {
+  const e = await endpoint(a);
+  const client = new FarmClient({ url: e.url, token: e.admin });
+  const cmd = a._[1] ?? 'status';
+  const json = (value: unknown): void => { out(JSON.stringify(value, null, 2)); };
+  if (cmd === 'status') return json(await adminFetch(a, '/admin/farm'));
+  if (cmd === 'discover') {
+    if (!a._[2]) fail('usage: ./mesh farm discover PEER');
+    return json(await client.discover(a._[2]));
+  }
+  if (cmd === 'on' || cmd === 'off') {
+    const current = await adminFetch(a, '/admin/farm') as { policy: unknown };
+    const old = FarmPolicy.parse(current.policy);
+    const requesters = cmd === 'on' ? a._.slice(2) : old.requesters;
+    if (cmd === 'on' && !requesters.length) fail('farm on requires already approved requester peer IDs');
+    const policy = FarmPolicy.parse({ ...old, enabled: cmd === 'on', requesters,
+      images: a.all('image').length ? a.all('image') : old.images.length ? old.images : [DEFAULT_FARM_IMAGE],
+      cpus: Number(a.get('cpus') ?? old.cpus), memoryMb: a.int('memory', old.memoryMb),
+      diskMb: a.int('disk', old.diskMb), timeoutMs: a.int('timeout', old.timeoutMs) });
+    const r = await fetch(`${e.url}/admin/farm/policy`, { method: 'POST', headers: { authorization: `Bearer ${e.admin}`, 'content-type': 'application/json' }, body: JSON.stringify(policy), signal: AbortSignal.timeout(10000) });
+    const value = await r.json(); if (!r.ok) throw new Error(JSON.stringify(value));
+    return json(value);
+  }
+  if (cmd === 'prepare') {
+    const root = a.get('source'), target = a.get('target'), file = a.get('out'), commands = a.all('command');
+    if (!root || !target || !file || !commands.length) fail('farm prepare requires --source DIR --target PEER --command CMD --out FILE');
+    const dir = resolve(root);
+    const git = spawnSync('git', ['-C', dir, 'rev-parse', 'HEAD'], { encoding: 'utf8' });
+    if (git.status !== 0) fail('farm source must have a committed Git baseline');
+    const dirty = spawnSync('git', ['-C', dir, 'status', '--porcelain'], { encoding: 'utf8' });
+    if (dirty.status !== 0) fail('could not inspect source changes');
+    const source = await packageSource(dir), digest = sourceDigest(source);
+    const own = await adminFetch(a, '/admin/status') as { peerId: string };
+    const spec = FarmSpec.parse({ v: 1, kind: 'routine', jobId: `job_${randomUUID()}`, attemptId: `attempt_${randomUUID()}`, fence: 1,
+      requesterPeerId: own.peerId, targetPeerId: target, projectId: a.get('project') ?? 'project', workspaceId: a.get('workspace') ?? 'personal',
+      title: a.get('title') ?? 'Project verification', source: { baseCommit: git.stdout.trim(), digest, ...(dirty.stdout.trim() ? { overlayDigest: digest } : {}) },
+      image: a.get('image') ?? DEFAULT_FARM_IMAGE, architecture: a.get('architecture') ?? process.arch,
+      steps: commands.map((command, i) => ({ name: `Step ${i + 1}`, command })), network: 'none', retry: 'isolated',
+      outputs: a.all('output'),
+      limits: { cpus: Number(a.get('cpus') ?? 1), memoryMb: a.int('memory', 512), diskMb: a.int('disk', 64), timeoutMs: a.int('timeout', 600000) } });
+    const pkg = FarmSubmit.parse({ targetPeerId: target, package: { spec, source } });
+    // This is a review artifact containing plaintext source, written owner-only.
+    await atomicWriteFile(resolve(file), JSON.stringify(pkg, null, 2));
+    json({ file: resolve(file), targetPeerId: target, sourceDigest: digest, files: source.files.map((f) => f.path), steps: spec.steps,
+      trust: 'The selected worker owner can read this source. Review the package before farm run FILE --yes.' });
+    return;
+  }
+  if (['run', 'job', 'cancel', 'ack', 'artifacts'].includes(cmd)) {
+    const file = a._[2]; if (!file) fail(`usage: ./mesh farm ${cmd} FILE`);
+    const pkg = FarmSubmit.parse(JSON.parse(await readFile(resolve(file), 'utf8')));
+    const ref = pkg.package.spec;
+    if (cmd === 'run') {
+      if (!a.has('yes')) fail('review the package and selected worker, then pass --yes to authorize source export and routine execution');
+      return json(await client.submit(pkg));
+    }
+    if (cmd === 'job') return json(await client.status(ref));
+    if (cmd === 'cancel') return json(await client.cancel(ref));
+    if (cmd === 'artifacts') {
+      const dir = a.get('out'); if (!dir) fail('farm artifacts requires --out NEW_DIRECTORY');
+      const job = await client.status(ref);
+      if (!job.result) fail('result has not been collected yet');
+      const result = FarmResult.parse(job.result);
+      const source = { files: result.artifacts };
+      const { validateSource } = await import('./farm/source.js');
+      validateSource(source, undefined, false);
+      if (source.files.some((f) => !pkg.package.spec.outputs.includes(f.path))) fail('returned artifact was not declared in the job');
+      const dest = resolve(dir);
+      await mkdir(dest, { mode: 0o700 }); // existing directories are deliberately refused
+      for (const f of source.files) {
+        const path = join(dest, f.path);
+        const { dirname } = await import('node:path');
+        await mkdir(dirname(path), { recursive: true, mode: 0o700 });
+        await writeFile(path, Buffer.from(f.data, 'base64'), { flag: 'wx', mode: 0o600 });
+      }
+      return json({ directory: dest, files: source.files.map((f) => f.path) });
+    }
+    return json(await client.acknowledge(ref));
+  }
+  fail('usage: ./mesh farm status|on|off|discover|prepare|run|job|cancel|ack|artifacts');
+}
+
 // ------------------------------------------------------------------ init / onboarding
 async function init(a: Args): Promise<void> {
   const dir = dataDir(a);
@@ -1115,6 +1209,8 @@ async function main(): Promise<void> {
       return searchCmd(a);
     case 'code':
       return codeCmd(a);
+    case 'farm':
+      return farmCmd(a);
     case 'split':
       return splitCmd(a);
     case 'engine':

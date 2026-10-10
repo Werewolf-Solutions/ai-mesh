@@ -1,3 +1,4 @@
+import { usePrivacy } from '../privacy';
 import type { SystemView } from '@werewolf-mesh/protocol';
 import { useCallback, useEffect, useRef, useState, type ReactNode } from 'react';
 import type { Gateway } from '../store';
@@ -218,6 +219,7 @@ function Tile({
 // ------------------------------------------------------------------ view
 
 export function ComputerView({ gateways }: { gateways: Gateway[] }) {
+  const { mask } = usePrivacy();
   const gateway = gateways[0];
   const { history, error } = useSystem(gateway);
   const v = history.at(-1)?.v;
@@ -237,7 +239,7 @@ export function ComputerView({ gateways }: { gateways: Gateway[] }) {
           <p className="mt-4 rounded-lg border border-rule bg-sheet px-4 py-3 text-sm text-slate">
             {error.code === 401 || error.code === 403
               ? "Only the operator of this node can see its computer's resources. Open your own node's page (for example http://127.0.0.1:8080) or add its admin token under Gateways."
-              : `Could not read the resources: ${error.message}`}
+              : `Could not read the resources: ${mask(error.message)}`}
           </p>
         )}
         {!v && !error && <p className="mt-6 text-slate">Reading…</p>}
@@ -259,6 +261,7 @@ function Body({
   pct: (n: number) => string;
   deg: (n: number) => string;
 }) {
+  const { mask } = usePrivacy();
   const memPct = (s: SystemView) => (s.memory.totalMB ? (s.memory.usedMB / s.memory.totalMB) * 100 : null);
   const ww = v.mesh;
   const wwRam = ww.node.rssMB + ww.runtimes.reduce((s, r) => s + (r.rssMB ?? 0), 0);
@@ -397,8 +400,8 @@ function Body({
                 {gb(v.disk.freeMB)} free of {gb(v.disk.totalMB)}
               </p>
               <Meter value={v.disk.totalMB ? ((v.disk.totalMB - v.disk.freeMB) / v.disk.totalMB) * 100 : null} label="Disk used" />
-              <p className="mt-1 truncate text-xs text-slate" title={v.disk.path}>
-                The disk holding {v.disk.path}, where models are stored.
+              <p className="mt-1 truncate text-xs text-slate" title={mask(v.disk.path)}>
+                The disk holding {mask(v.disk.path)}, where models are stored.
               </p>
             </>
           ) : (

@@ -104,3 +104,10 @@ One framed JSON message per stream (frame version 1): `{"v":1,"type":"receipt","
 ## Versioning
 
 Protocol IDs carry a semantic version. An incompatible change gets a new ID (e.g. `/werewolf-mesh/infer/2.0.0`), and nodes may serve both during a transition. A frame with `v` other than 1 is rejected.
+## Coding farm protocol
+
+Routine execution uses the independently versioned
+`/werewolf-mesh/farm/1.0.0` protocol and schemas in `packages/protocol/src/farm.ts`.
+Bounded encrypted packages transfer in dedicated chunked streams; they do not
+use inference frames or inference retry policy. See [farm](farm.md) for grants,
+leases, fencing, encryption and recovery behavior.

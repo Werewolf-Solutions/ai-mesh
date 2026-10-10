@@ -1,3 +1,4 @@
+import { PrivateInput, Sensitive } from '../privacy';
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { myTokens, PackApi, type NoteView, type PackStats } from '../pack';
 import type { Gateway } from '../store';
@@ -78,7 +79,7 @@ export function PackView({ gateways }: { gateways: Gateway[] }) {
           <label htmlFor="pack-search" className="sr-only">
             Search the pack memory
           </label>
-          <input
+          <PrivateInput
             id="pack-search"
             value={q}
             onChange={(e) => setQ(e.target.value)}
@@ -109,7 +110,7 @@ export function PackView({ gateways }: { gateways: Gateway[] }) {
             </label>
           )}
         </div>
-        {error && <p className="mt-3 text-sm text-blood">{error}</p>}
+        {error && <p className="mt-3 text-sm text-blood"><Sensitive>{error}</Sensitive></p>}
 
         {res && res.notes.length === 0 && (
           <div className="mt-10 max-w-[60ch]">
@@ -132,14 +133,14 @@ export function PackView({ gateways }: { gateways: Gateway[] }) {
                   return (
                     <article key={n.id} className={`rounded-xl bg-sheet p-4 ${v.hidden ? 'opacity-60' : ''}`}>
                       <div className="flex flex-wrap items-baseline justify-between gap-2">
-                        <h2 className="font-display text-lg leading-snug">{n.title}</h2>
+                        <h2 className="font-display text-lg leading-snug"><Sensitive>{n.title}</Sensitive></h2>
                         <span className="num text-xs text-slate">
                           {KIND_LABEL[n.kind]} · {n.day}
                           {v.similarity !== undefined ? ` · ${Math.round(v.similarity * 100)}% match` : ''}
                         </span>
                       </div>
-                      {n.problem && <p className="mt-2 text-sm text-slate">{n.problem}</p>}
-                      <p className="mt-2 whitespace-pre-wrap font-display leading-[1.6]">{long && !open ? n.solution.slice(0, 400) + '…' : n.solution}</p>
+                      {n.problem && <p className="mt-2 text-sm text-slate"><Sensitive>{n.problem}</Sensitive></p>}
+                      <p className="mt-2 whitespace-pre-wrap font-display leading-[1.6]"><Sensitive>{long && !open ? n.solution.slice(0, 400) + '…' : n.solution}</Sensitive></p>
                       {long && (
                         <button
                           type="button"
@@ -159,7 +160,7 @@ export function PackView({ gateways }: { gateways: Gateway[] }) {
                       <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
                         {n.tags.map((t) => (
                           <span key={t} className="rounded-full bg-moon-soft px-2 py-0.5 text-xs">
-                            {t}
+                            <Sensitive>{t}</Sensitive>
                           </span>
                         ))}
                         <span className="num text-xs text-slate">{v.uses ? `helped answer ${v.uses} question${v.uses > 1 ? 's' : ''} here` : 'not used yet'}</span>

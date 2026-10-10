@@ -1,3 +1,4 @@
+import { PrivateTextarea, Sensitive, usePrivacy } from '../privacy';
 import { MeshClient } from '@werewolf-mesh/client';
 import { isShareIntent } from '@werewolf-mesh/protocol';
 import { useEffect, useMemo, useRef, useState } from 'react';
@@ -183,13 +184,14 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
     }
   }
 
+  const { hidden } = usePrivacy();
   const messages = chat?.messages ?? [];
   return (
     <div className="flex h-full min-h-0 flex-col">
       <div className="min-h-0 flex-1 overflow-y-auto px-4 sm:px-8">
         <div className="mx-auto max-w-[72ch] py-8">
           {messages.length === 0 && <EmptyState />}
-          {messages.map((m, idx) => {
+          <Sensitive>{messages.map((m, idx) => {
             if (m.role === 'user') {
               return (
                 <div key={m.id} className="mb-6 flex justify-end">
@@ -310,7 +312,7 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
                 )}
               </article>
             );
-          })}
+          })}</Sensitive>
           <div ref={endRef} />
         </div>
       </div>
@@ -318,7 +320,7 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
         className="border-t border-rule bg-sheet px-4 py-3 sm:px-8"
         onSubmit={(e) => {
           e.preventDefault();
-          send();
+          if (!hidden) send();
         }}
       >
         <ModelPicker cat={cat} model={model} effort={effort} onModel={setModel} onEffort={setEffort} disabled={busy} />
@@ -357,7 +359,7 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
           <label htmlFor="composer" className="sr-only">
             Message
           </label>
-          <textarea
+          <PrivateTextarea
             id="composer"
             rows={2}
             value={draft}
@@ -376,7 +378,7 @@ export function ChatView({ chat, gateways, labels, onUpdate, onCreate }: Props) 
               Stop
             </button>
           ) : (
-            <button type="submit" disabled={!draft.trim()} className="h-11 rounded-xl bg-ink px-4 font-medium text-paper disabled:opacity-40">
+            <button type="submit" disabled={hidden || !draft.trim()} className="h-11 rounded-xl bg-ink px-4 font-medium text-paper disabled:opacity-40">
               Send
             </button>
           )}

@@ -1,3 +1,4 @@
+import { PrivacyContext } from './privacy';
 import { useCallback, useMemo, useState } from 'react';
 import { ChatView } from './components/ChatView';
 import { GatewaysView } from './components/GatewaysView';
@@ -6,12 +7,15 @@ import { TestsView } from './components/TestsView';
 import { PackView } from './components/PackView';
 import { ModelsView } from './components/ModelsView';
 import { ComputerView } from './components/ComputerView';
+import { FarmView } from './components/FarmView';
 import { Moon } from './components/Moon';
 import { uid, useChats, useGateways, usePersistent, type Message } from './store';
 
-type Tab = 'chat' | 'pack' | 'models' | 'computer' | 'network' | 'tests' | 'gateways';
+type Tab = 'chat' | 'pack' | 'models' | 'computer' | 'farm' | 'network' | 'tests' | 'gateways';
 
 export function App() {
+  const [privacy, setPrivacy] = usePersistent<boolean>('wam.streamPrivacy', false);
+  const mask = (value: string | undefined) => privacy ? '***' : value;
   const [gateways, setGateways] = useGateways();
   const { chats, setChats, update } = useChats();
   const [activeId, setActiveId] = usePersistent<string | null>('wam.active', null);
@@ -45,8 +49,9 @@ export function App() {
   const peersUp = snap?.peers.filter((p) => p.available).length ?? 0;
 
   return (
+    <PrivacyContext.Provider value={privacy}>
     <div className="grid h-dvh grid-rows-[auto_minmax(0,1fr)]">
-      <header className="flex items-center gap-3 border-b border-rule bg-sheet px-4 py-2.5 sm:px-6">
+      <header className="flex flex-wrap items-center gap-3 border-b border-rule bg-sheet px-4 py-2.5 sm:px-6">
         <button className="rounded-md border border-rule px-2 py-1 text-sm md:hidden" onClick={() => setRailOpen((o) => !o)} aria-expanded={railOpen} aria-controls="rail">
           Chats
         </button>
@@ -61,6 +66,7 @@ export function App() {
               ['pack', 'Pack'],
               ['models', 'Models'],
               ['computer', 'Computer'],
+              ['farm', 'Farm'],
               ['network', 'Network'],
               ['tests', 'Tests'],
               ['gateways', 'Gateways'],
@@ -76,8 +82,13 @@ export function App() {
             </button>
           ))}
         </nav>
-        <span className="ml-auto hidden text-sm text-slate sm:inline" title={primary?.url}>
-          {primary ? new URL(primary.url).host : 'no gateway'}
+        <button type="button" aria-pressed={privacy} onClick={() => setPrivacy((v) => !v)}
+          className={`rounded-md border px-2.5 py-1 text-sm ${privacy ? 'border-pine bg-pine text-paper' : 'border-rule text-slate'}`}
+          title="Mask addresses, identities, paths, chats and task content for streaming">
+          Stream privacy {privacy ? 'on' : 'off'}
+        </button>
+        <span className="ml-auto hidden text-sm text-slate sm:inline" title={mask(primary?.url)}>
+          {mask(primary ? new URL(primary.url).host : 'no gateway')}
           {snap && (
             <>
               {' '}
@@ -113,11 +124,11 @@ export function App() {
                     setRailOpen(false);
                   }}
                 >
-                  {c.title || 'Untitled'}
+                  {mask(c.title || 'Untitled')}
                 </button>
                 <button
                   className="px-1.5 text-xs text-slate opacity-0 group-hover:opacity-100 focus:opacity-100"
-                  aria-label={`Delete chat ${c.title}`}
+                  aria-label={`Delete chat ${mask(c.title)}`}
                   onClick={() => setChats((all) => all.filter((x) => x.id !== c.id))}
                 >
                   Delete
@@ -154,10 +165,12 @@ export function App() {
           {tab === 'pack' && <PackView gateways={gateways} />}
           {tab === 'models' && <ModelsView gateways={gateways} />}
           {tab === 'computer' && <ComputerView gateways={gateways} />}
+          {tab === 'farm' && <FarmView gateways={gateways} />}
           {tab === 'tests' && <TestsView gateways={gateways} peers={snap?.peers ?? []} selfPeerId={snap?.status.peerId ?? null} labels={labels} />}
           {tab === 'gateways' && <GatewaysView gateways={gateways} setGateways={setGateways} />}
         </main>
       </div>
     </div>
+    </PrivacyContext.Provider>
   );
 }

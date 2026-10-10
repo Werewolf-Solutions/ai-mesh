@@ -107,6 +107,9 @@ importers:
       '@multiformats/multiaddr':
         specifier: 13.0.3
         version: 13.0.3
+      '@werewolf-mesh/client':
+        specifier: workspace:*
+        version: link:../../packages/client
       '@werewolf-mesh/protocol':
         specifier: workspace:*
         version: link:../../packages/protocol

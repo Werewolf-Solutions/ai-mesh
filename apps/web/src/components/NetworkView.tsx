@@ -1,3 +1,4 @@
+import { usePrivacy } from '../privacy';
 import type { MetricsView, NodeStatusView, PeerView } from '@werewolf-mesh/protocol';
 import { useEffect, useState } from 'react';
 import type { Gateway } from '../store';
@@ -67,8 +68,9 @@ function ConnectionStatus({ connected, current = true }: { connected: boolean; c
 }
 
 export function NetworkView({ snap, error, gateway }: { snap: Snapshot | null; error: string | null; gateway: Gateway | undefined }) {
+  const { mask } = usePrivacy();
   if (!gateway) return null;
-  if (!snap) return <p className="p-8 text-slate">{error ?? 'Loading…'}</p>;
+  if (!snap) return <p className="p-8 text-slate">{error ? mask(error) : 'Loading…'}</p>;
   const { status: s, peers, metrics } = snap;
   const selfLoad = (s.worker.active + s.worker.queued) / Math.max(1, s.worker.maxConcurrency + s.worker.maxQueue);
   const failures = Object.entries(metrics.counters)
@@ -79,12 +81,12 @@ export function NetworkView({ snap, error, gateway }: { snap: Snapshot | null; e
     <div className="h-full overflow-y-auto px-4 py-8 sm:px-8">
       <div className="mx-auto max-w-5xl">
         <header className="mb-6">
-          <h1 className="font-display text-3xl tracking-tight">The pack, as {s.peerId.slice(-6)} sees it</h1>
+          <h1 className="font-display text-3xl tracking-tight">The pack, as {mask(s.peerId.slice(-6))} sees it</h1>
           <p className="mt-1 max-w-[70ch] text-slate">
-            A local, partial view from the gateway at {new URL(gateway.url).host}. Other nodes may see a different network. Updated every 3 seconds.
+            A local, partial view from the gateway at {mask(new URL(gateway.url).host)}. Other nodes may see a different network. Updated every 3 seconds.
           </p>
           {error ? (
-            <p className="mt-2 text-sm text-blood" role="status">Live status unknown. Last update {new Date(snap.at).toLocaleTimeString()}. Refresh failed: {error}</p>
+            <p className="mt-2 text-sm text-blood" role="status">Live status unknown. Last update {new Date(snap.at).toLocaleTimeString()}. Refresh failed: {mask(error)}</p>
           ) : (
             <p className="mt-2 text-xs text-slate" role="status">Live status · updated {new Date(snap.at).toLocaleTimeString()}</p>
           )}
@@ -96,7 +98,7 @@ export function NetworkView({ snap, error, gateway }: { snap: Snapshot | null; e
             <h2 id="this-node" className="font-display text-xl">This node</h2>
             <dl className="num mt-3 grid grid-cols-[auto_1fr] gap-x-6 gap-y-1.5 text-sm">
               <dt className="text-slate">Model</dt>
-              <dd className={s.runtime.ready ? 'text-pine' : 'text-blood'}>{s.runtime.ready ? 'Ready' : 'Not ready'} — {s.runtime.detail}</dd>
+              <dd className={s.runtime.ready ? 'text-pine' : 'text-blood'}>{s.runtime.ready ? 'Ready' : 'Not ready'} — {mask(s.runtime.detail)}</dd>
               <dt className="text-slate">Verified file</dt>
               <dd>{s.model.verified ? `${s.model.id}` : 'not verified'}</dd>
               <dt className="text-slate">State</dt>
@@ -118,7 +120,7 @@ export function NetworkView({ snap, error, gateway }: { snap: Snapshot | null; e
               <dt className="text-slate">Memory</dt>
               <dd>{Math.round(metrics.memory.rssBytes / 2 ** 20)} MiB (node process only)</dd>
               <dt className="text-slate">Peer ID</dt>
-              <dd className="break-all text-xs">{s.peerId}</dd>
+              <dd className="break-all text-xs">{mask(s.peerId)}</dd>
             </dl>
             {failures.length > 0 && (
               <>
@@ -159,9 +161,9 @@ export function NetworkView({ snap, error, gateway }: { snap: Snapshot | null; e
                   {peers.map((p) => (
                     <tr key={p.peerId} className="border-b border-rule/60 align-top">
                       <td className="py-2 pr-4">
-                        <span className="flex items-center gap-2" title={p.peerId}>
+                        <span className="flex items-center gap-2" title={mask(p.peerId)}>
                           <Moon load={((p.activeJobs ?? 0) + (p.queueLength ?? 0)) / 9} available={p.available} size={16} />
-                          {p.label ?? `…${p.peerId.slice(-6)}`}
+                          {mask(p.label ?? `…${p.peerId.slice(-6)}`)}
                         </span>
                       </td>
                       <td className="py-2 pr-4">
@@ -181,7 +183,7 @@ export function NetworkView({ snap, error, gateway }: { snap: Snapshot | null; e
                       <td className="py-2 pr-4">{p.lastStatusAgeMs == null ? 'never' : `${ms(p.lastStatusAgeMs)} ago`}</td>
                       <td className="max-w-[28ch] py-2 text-xs text-slate">
                         {p.consecutiveFailures > 0 && `${p.consecutiveFailures} failed checks. `}
-                        {p.lastError}
+                        {mask(p.lastError)}
                       </td>
                     </tr>
                   ))}
@@ -197,6 +199,7 @@ export function NetworkView({ snap, error, gateway }: { snap: Snapshot | null; e
 
 /** The gateway in the centre, each authorised peer around it; solid = direct link, dashed = through a relay. */
 function PackRing({ self, selfLoad, peers, current }: { self: NodeStatusView; selfLoad: number; peers: PeerView[]; current: boolean }) {
+  const { mask } = usePrivacy();
   const W = 360;
   const c = W / 2;
   const R = 128;
@@ -213,10 +216,10 @@ function PackRing({ self, selfLoad, peers, current }: { self: NodeStatusView; se
             <g key={p.peerId}>
               {current && p.connected && <line x1={c} y1={c} x2={x} y2={y} stroke="var(--color-slate)" strokeOpacity="0.5" strokeDasharray={p.relayed ? '4 4' : undefined} />}
               <g transform={`translate(${x - 17} ${y - 17})`}>
-                <Moon load={load} available={p.available} size={34} title={`${p.label ?? p.peerId}: ${current ? (p.connected ? 'connected' : 'not connected') : 'status unknown'}; ${p.available ? 'can serve' : 'cannot serve'} at last update`} />
+                <Moon load={load} available={p.available} size={34} title={`${mask(p.label ?? p.peerId)}: ${current ? (p.connected ? 'connected' : 'not connected') : 'status unknown'}; ${p.available ? 'can serve' : 'cannot serve'} at last update`} />
               </g>
               <text x={x} y={y + 32} textAnchor="middle" fontSize="12" fill="var(--color-ink)">
-                {p.label ?? p.peerId.slice(-6)}
+                {mask(p.label ?? p.peerId.slice(-6))}
               </text>
               <circle cx={x + 13} cy={y - 13} r="5" fill={current ? (p.connected ? 'var(--color-pine)' : 'var(--color-blood)') : 'var(--color-slate)'} stroke="var(--color-sheet)" strokeWidth="2" />
               <text x={x} y={y + 46} textAnchor="middle" fontSize="10" fill={current ? (p.connected ? 'var(--color-pine)' : 'var(--color-blood)') : 'var(--color-slate)'}>

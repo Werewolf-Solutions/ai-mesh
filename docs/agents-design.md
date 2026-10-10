@@ -1,5 +1,10 @@
 # Tools and agents: design
 
+Extension (2026-10-08): the [trusted coding farm](farm.md) adds separately
+authorized remote routine execution. The requester-local trust boundaries below
+still describe chat tools; repository agents and PSM integration remain planned
+in the [implementation plan](coding-farm-plan.md).
+
 Status (2026-09-29):
 
 - **Web research is built** as a fixed pipeline: search → read → answer with sources. See [agents.md](agents.md). It runs on the asker's node, the model never chooses a URL, and fetch_url has the SSRF rules below.

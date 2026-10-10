@@ -186,3 +186,22 @@ It is never used by real deployments.
 | GPU inside Docker | Needs the NVIDIA Container Toolkit and a GPU image; not built | Run a native node for GPU sharing |
 | AMD / Intel GPUs via Vulkan, macOS Metal | No such hardware here | `./mesh gpu on vulkan` |
 | Qwen3 8B inside Docker | Needs `MESH_MEM` ≥ 10g; only run natively | `MESH_MEM=10g`, then install from the Models page |
+## Coding farm tests
+
+`tests/unit/farm.test.ts` covers strict contracts, source/path validation,
+identity-bound encryption, tampering, chunk bounds and durable deduplication.
+`tests/integration/farm.test.ts` uses two real node processes and offline Docker
+containers for routines, isolation, output/disk limits, cancellation, requester
+restart, worker crash cleanup, missing images and lease expiry. It needs Docker
+and the default digest-pinned Node image from [farm setup](farm.md).
+The inference runtimes in that cluster are fake; the routine execution is real
+and does not depend on a model. These tests run on one physical Linux host and
+do not establish separate-machine, WAN or coding-model quality acceptance.
+
+2026-10-08 routine-farm checkpoint (working tree 0.2.1): `pnpm build` and
+`pnpm typecheck` passed; `pnpm test` passed **234 tests in 21 files**. This includes
+14 farm checks (5 unit, 9 integration), with real sandbox execution, encrypted
+build artifact collection, symlink-artifact refusal and the failure cases above.
+The production node package's CLI import/dependency smoke check also passed.
+The Farm UI builds successfully; rendered browser acceptance is not recorded.
+No commit, publication or live deployment is claimed by this checkpoint.

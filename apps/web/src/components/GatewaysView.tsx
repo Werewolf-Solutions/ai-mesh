@@ -1,7 +1,9 @@
+import { PrivateInput, usePrivacy } from '../privacy';
 import { useState } from 'react';
 import type { Gateway } from '../store';
 
 export function GatewaysView({ gateways, setGateways }: { gateways: Gateway[]; setGateways: (g: Gateway[]) => void }) {
+  const { hidden, mask } = usePrivacy();
   const [form, setForm] = useState<Gateway>({ url: '', token: '', adminToken: '', label: '' });
   const [check, setCheck] = useState<Record<string, string>>({});
 
@@ -41,8 +43,8 @@ export function GatewaysView({ gateways, setGateways }: { gateways: Gateway[]; s
             <li key={g.url} className="rounded-xl border border-rule bg-sheet p-4">
               <div className="flex flex-wrap items-baseline justify-between gap-2">
                 <div>
-                  <span className="font-medium">{g.label || new URL(g.url).host}</span>
-                  <span className="ml-2 text-sm text-slate">{g.url}</span>
+                  <span className="font-medium">{mask(g.label || new URL(g.url).host)}</span>
+                  <span className="ml-2 text-sm text-slate">{mask(g.url)}</span>
                 </div>
                 <span className="text-xs text-slate">{i === 0 ? 'tried first' : `fallback ${i}`}</span>
               </div>
@@ -50,7 +52,7 @@ export function GatewaysView({ gateways, setGateways }: { gateways: Gateway[]; s
                 {g.token ? 'Client token saved' : 'No client token (works only on this machine’s own node)'}
                 {g.adminToken ? ', admin token saved' : ''}
               </p>
-              {check[g.url] && <p className="mt-1 text-sm">{check[g.url]}</p>}
+              {check[g.url] && <p className="mt-1 text-sm">{mask(check[g.url])}</p>}
               <div className="mt-3 flex flex-wrap gap-2 text-sm">
                 <button className="rounded-md border border-rule px-2.5 py-1" onClick={() => test(g)}>
                   Check
@@ -94,7 +96,7 @@ export function GatewaysView({ gateways, setGateways }: { gateways: Gateway[]; s
           ).map(([k, label, ph, type, req]) => (
             <label key={k} className="grid gap-1 text-sm">
               <span>{label}</span>
-              <input
+              <PrivateInput
                 type={type}
                 required={req}
                 placeholder={ph}
@@ -106,9 +108,9 @@ export function GatewaysView({ gateways, setGateways }: { gateways: Gateway[]; s
             </label>
           ))}
           <p className="text-xs text-slate">
-            The gateway must list this page’s origin ({window.location.origin}) in http.allowedOrigins, and should be served over HTTPS when it is not on this machine.
+            The gateway must list this page’s origin ({mask(window.location.origin)}) in http.allowedOrigins, and should be served over HTTPS when it is not on this machine.
           </p>
-          <button type="submit" className="justify-self-start rounded-lg bg-ink px-4 py-2 font-medium text-paper">
+          <button type="submit" disabled={hidden} className="justify-self-start rounded-lg bg-ink px-4 py-2 font-medium text-paper">
             Add gateway
           </button>
         </form>

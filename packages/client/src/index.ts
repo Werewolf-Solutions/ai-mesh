@@ -13,6 +13,7 @@
  * Works in browsers and Node >= 18 (global fetch + ReadableStream).
  */
 import { SseParser, type AgentSourceView, type AgentStepView, type ChatCompletionChunk, type ChatMessage, type CodeRunView } from '@werewolf-mesh/protocol';
+export { FarmClient, type FarmJob } from './farm.js';
 
 export interface GatewayConfig {
   url: string;

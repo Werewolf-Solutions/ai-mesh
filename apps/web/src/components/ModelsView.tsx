@@ -1,3 +1,4 @@
+import { Sensitive } from '../privacy';
 import type { CatalogModelView } from '@werewolf-mesh/protocol';
 import { useCallback, useEffect, useState } from 'react';
 import { gb, ramGb, useCatalog } from '../models';
@@ -45,8 +46,8 @@ export function ModelsView({ gateways }: { gateways: Gateway[] }) {
             node's page (for example http://127.0.0.1:8080).
           </p>
         )}
-        {cat.error && <p className="mt-3 text-sm text-blood">{cat.error}</p>}
-        {err && <p className="mt-3 text-sm text-blood">{err}</p>}
+        {cat.error && <p className="mt-3 text-sm text-blood"><Sensitive>{cat.error}</Sensitive></p>}
+        {err && <p className="mt-3 text-sm text-blood"><Sensitive>{err}</Sensitive></p>}
 
         <ul className="mt-6 space-y-3">
           {(cat.models ?? []).map((m) => (
@@ -162,7 +163,7 @@ function LocalControls({
         </div>
       )}
       {!l.fit.ok && l.state !== 'serving' && <p className="mt-2 text-sm text-blood">Can't run here: {l.fit.reasons.join('; ')}.</p>}
-      {l.error && <p className="mt-2 text-sm text-blood">{l.error}</p>}
+      {l.error && <p className="mt-2 text-sm text-blood"><Sensitive>{l.error}</Sensitive></p>}
     </div>
   );
 }
@@ -228,7 +229,7 @@ function GpuCard({ gateway, onChanged }: { gateway: Gateway | undefined; onChang
               {rt.job.phase === 'downloading' ? `Downloading the GPU build of llama.cpp: ${(rt.job.done / 2 ** 20).toFixed(0)} MB (verified before use)` : 'Restarting your models…'}
             </p>
           )}
-          {rt.job?.error && <p className="mt-2 text-sm text-blood">{rt.job.error}</p>}
+          {rt.job?.error && <p className="mt-2 text-sm text-blood"><Sensitive>{rt.job.error}</Sensitive></p>}
           <div className="mt-3 flex flex-wrap gap-2 text-sm">
             {!onGpu && best && (
               <button type="button" disabled={!!rt.job && !rt.job.error} onClick={() => void set(best)} className="rounded-md bg-ink px-3 py-1.5 font-medium text-paper disabled:opacity-40">
@@ -246,7 +247,7 @@ function GpuCard({ gateway, onChanged }: { gateway: Gateway | undefined; onChang
               </button>
             )}
           </div>
-          {err && <p className="mt-2 text-sm text-blood">{err}</p>}
+          {err && <p className="mt-2 text-sm text-blood"><Sensitive>{err}</Sensitive></p>}
         </>
       )}
     </section>

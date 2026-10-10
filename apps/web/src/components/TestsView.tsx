@@ -1,3 +1,4 @@
+import { Sensitive } from '../privacy';
 import { MeshClient, type ScoreResult } from '@werewolf-mesh/client';
 import type { PeerView } from '@werewolf-mesh/protocol';
 import { Fragment, useEffect, useMemo, useRef, useState } from 'react';
@@ -279,7 +280,7 @@ function ReadingTest({ gateways, peers, selfPeerId, labels }: Props) {
   const stale = runs.some((r) => r.scores && r.scores.reference !== reference) || runs.some((r) => r.answer.trim() && !r.scores);
 
   return (
-    <section aria-labelledby="reading-title">
+    <section aria-labelledby="reading-title"><Sensitive>
       <h1 id="reading-title" className="font-display text-3xl tracking-tight">
         How long does a node take to read a long text?
       </h1>
@@ -505,7 +506,7 @@ function ReadingTest({ gateways, peers, selfPeerId, labels }: Props) {
           </p>
         </div>
       )}
-    </section>
+    </Sensitive></section>
   );
 }
 

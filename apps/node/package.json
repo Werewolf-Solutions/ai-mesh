@@ -1,6 +1,6 @@
 {
   "name": "@werewolf-mesh/node",
-  "version": "0.2.0",
+  "version": "0.2.1",
   "license": "Apache-2.0",
   "type": "module",
   "private": true,
@@ -27,6 +27,7 @@
     "@libp2p/websockets": "10.1.21",
     "@multiformats/multiaddr": "13.0.3",
     "@werewolf-mesh/protocol": "workspace:*",
+    "@werewolf-mesh/client": "workspace:*",
     "fastify": "5.12.5",
     "libp2p": "3.3.11",
     "pino": "10.3.1",

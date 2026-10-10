@@ -1,3 +1,4 @@
+import { Sensitive, usePrivacy } from '../privacy';
 import type { CatalogModelView } from '@werewolf-mesh/protocol';
 import { useCallback, useEffect, useState } from 'react';
 import type { Gateway } from '../store';
@@ -51,6 +52,7 @@ export function LendCard({ split }: { split: ReturnType<typeof useSplit> }) {
   const [chosen, setChosen] = useState<Set<string> | null>(null);
   const [device, setDevice] = useState<'cpu' | 'gpu' | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const { mask } = usePrivacy();
   if (!v) return null;
   const peers = v.borrow.peers;
   const sel = chosen ?? new Set(v.lend.peers);
@@ -94,8 +96,8 @@ export function LendCard({ split }: { split: ReturnType<typeof useSplit> }) {
                       setChosen(n);
                     }}
                   />
-                  <span>{name(p)}</span>
-                  <span className="text-xs text-slate" title={p.peerId}>
+                  <span><Sensitive>{name(p)}</Sensitive></span>
+                  <span className="text-xs text-slate" title={mask(p.peerId)}>
                     {p.connected ? 'connected' : 'not connected'}
                   </span>
                 </label>
@@ -117,7 +119,7 @@ export function LendCard({ split }: { split: ReturnType<typeof useSplit> }) {
       <div className="mt-3 flex flex-wrap items-center gap-2 text-sm">
         {v.lend.enabled ? (
           <>
-            <span className="text-pine">{v.lend.detail}</span>
+            <span className="text-pine"><Sensitive>{v.lend.detail}</Sensitive></span>
             {v.lend.tunnels.active > 0 && <span className="text-slate">· in use by {v.lend.tunnels.active} connection{v.lend.tunnels.active > 1 ? 's' : ''}</span>}
             {dirty && (
               <button type="button" className="rounded-md bg-ink px-3 py-1 font-medium text-paper" onClick={() => void save(true)}>
@@ -134,7 +136,7 @@ export function LendCard({ split }: { split: ReturnType<typeof useSplit> }) {
           </button>
         )}
       </div>
-      {err && <p className="mt-2 text-sm text-blood">{err}</p>}
+      {err && <p className="mt-2 text-sm text-blood"><Sensitive>{err}</Sensitive></p>}
     </section>
   );
 }
@@ -147,6 +149,7 @@ export function SplitModel({ m, split }: { m: CatalogModelView; split: ReturnTyp
   const [chosen, setChosen] = useState<Set<string>>(new Set(current));
   const [share, setShare] = useState<number | null>(null);
   const [err, setErr] = useState<string | null>(null);
+  const { mask } = usePrivacy();
   if (!v) return null;
   const lenders = v.borrow.peers.filter((p) => p.lends || current.includes(p.peerId));
   if (!lenders.length && !current.length) return null;
@@ -163,8 +166,8 @@ export function SplitModel({ m, split }: { m: CatalogModelView; split: ReturnTyp
     <div className="mt-2 text-sm">
       {current.length > 0 && !open && (
         <p className="text-slate">
-          Split with {current.map((id) => name(v.borrow.peers.find((p) => p.peerId === id) ?? { peerId: id, label: null })).join(', ')}.{' '}
-          {/split: |fits|waiting/.test(m.local?.detail ?? '') ? (m.local!.detail!.split(/split: /)[1] ?? m.local!.detail!.replace(/^.*?\.gguf, /, '')) : ''}
+          Split with {mask(current.map((id) => name(v.borrow.peers.find((p) => p.peerId === id) ?? { peerId: id, label: null })).join(', '))}.{' '}
+          <Sensitive>{/split: |fits|waiting/.test(m.local?.detail ?? '') ? (m.local!.detail!.split(/split: /)[1] ?? m.local!.detail!.replace(/^.*?\.gguf, /, '')) : ''}</Sensitive>
         </p>
       )}
       {!open ? (
@@ -189,7 +192,7 @@ export function SplitModel({ m, split }: { m: CatalogModelView; split: ReturnTyp
                       setChosen(n);
                     }}
                   />
-                  {name(p)} <span className="text-xs text-slate">{p.lends ? 'lends memory' : p.reason}</span>
+                  <Sensitive>{name(p)}</Sensitive> <span className="text-xs text-slate">{p.lends ? 'lends memory' : mask(p.reason)}</span>
                 </label>
               </li>
             ))}
@@ -223,7 +226,7 @@ export function SplitModel({ m, split }: { m: CatalogModelView; split: ReturnTyp
               Cancel
             </button>
           </div>
-          {err && <p className="mt-2 text-blood">{err}</p>}
+          {err && <p className="mt-2 text-blood"><Sensitive>{err}</Sensitive></p>}
         </fieldset>
       )}
     </div>

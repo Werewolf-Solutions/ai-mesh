@@ -35,6 +35,8 @@ import { dirname, join as pathJoin } from 'node:path';
 import { loadSecrets, TokenChecker } from './secrets.js';
 import { createLogger, type Logger } from './util/log.js';
 import { SOFTWARE_VERSION } from './version.js';
+import { FarmService } from './farm/service.js';
+import { FarmTransport } from './farm/transport.js';
 
 export class MeshNode {
   cfg!: NodeConfig;
@@ -50,6 +52,8 @@ export class MeshNode {
   resources!: ResourceMonitor;
   lender!: SplitLender;
   rewards!: RewardsLedger;
+  farm!: FarmService;
+  farmTransport!: FarmTransport;
   private splitRetry: NodeJS.Timeout | undefined;
   tunnels!: SplitTunnels;
   pack!: PackMemory;
@@ -160,6 +164,11 @@ export class MeshNode {
       onRemoteCompleted: (worker, id, model, usage) => void this.rewards.noteCompleted(worker, id, model, usage).catch(() => undefined),
     });
 
+    this.farm = new FarmService({ dataDir: this.dataDir, identity: this.identity, authorized: (id) => this.admission.isAuthorized(id) });
+    await this.farm.init();
+    this.farmTransport = new FarmTransport(this.libp2p, (id) => this.admission.isAuthorized(id), (remote, req) => this.farm.handle(remote, req));
+    this.farm.connect((peer, req) => this.farmTransport.request(peer, req));
+
     this.scorer = new Scorer({
       enabled: this.cfg.scorer.enabled,
       binary: this.cfg.runtime.binary,
@@ -211,6 +220,7 @@ export class MeshNode {
       pack: this.cfg.pack.enabled ? this.pack : null,
       system: () => this.resources.snapshot(),
       rewards: () => this.rewards,
+      farm: this.farm,
       split: {
         lender: () => this.lender,
         tunnels: () => this.tunnels,
@@ -227,6 +237,7 @@ export class MeshNode {
 
     // ---- peer networking
     await this.libp2p.start();
+    await this.farmTransport.register();
     await new InferHandler({
       admission: this.admission,
       models: this.models,
@@ -404,6 +415,7 @@ export class MeshNode {
     this.stopping ??= (async () => {
       this.log?.info({ reason }, 'draining: no longer admitting jobs');
       this.draining = true;
+      await this.farm?.stop();
       if (this.models && this.gateway && this.cfg) {
         for (const h of this.models.hosts.values()) h.pool.draining = true;
         const busy = () => this.totals().active > 0 || this.totals().queued > 0 || this.gateway.inFlight > 0;
